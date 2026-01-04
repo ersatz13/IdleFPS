@@ -72,6 +72,9 @@ PLAYER_RANKS = (
     "Commander",
     "Chief",
 )
+BASE_MAX_LEVEL = 55
+PRESTIGE_MAX = 12
+MASTER_MAX_LEVEL = 1000
 CAMO_COLORS = {
     "None": "#3a3a3a",
     "Forest": "#2e5b2e",
@@ -89,6 +92,30 @@ CAMO_COLORS = {
     "Platinum": "#c0c0c0",
     "Diamond": "#7fc7ff",
 }
+ACHIEVEMENTS = [
+    ("kills_100", "Warpath I", "kills", 100, 50, "Reach 100 total kills."),
+    ("kills_1000", "Warpath II", "kills", 1000, 200, "Reach 1,000 total kills."),
+    ("kills_10000", "Apex Predator", "kills", 10000, 800, "Reach 10,000 total kills."),
+    ("deaths_1000", "Walking Target", "deaths", 1000, 50, "Reach 1,000 total deaths."),
+    ("deaths_5000", "Iron Will", "deaths", 5000, 200, "Reach 5,000 total deaths."),
+    ("headshots_250", "Sharpshooter", "headshots", 250, 100, "Reach 250 total headshots."),
+    ("headshots_2500", "Deadeye", "headshots", 2500, 400, "Reach 2,500 total headshots."),
+    ("headshots_10000", "Surgical", "headshots", 10000, 1200, "Reach 10,000 total headshots."),
+    ("streak_10", "Streaker", "longest_streak", 10, 150, "Achieve a 10 kill streak."),
+    ("streak_25", "Unstoppable", "longest_streak", 25, 500, "Achieve a 25 kill streak."),
+    ("multi_50", "Multi-kill Maniac", "multi_kills", 50, 250, "Earn 50 multikills total."),
+    ("xp_10000", "Rising Star", "xp_total", 10000, 200, "Earn 10,000 total XP."),
+    ("xp_100000", "Elite Operative", "xp_total", 100000, 800, "Earn 100,000 total XP."),
+    ("xp_1000000", "Legend", "xp_total", 1000000, 3000, "Earn 1,000,000 total XP."),
+    ("uap_25", "Recon Specialist", "uap_calls", 25, 200, "Call in 25 UAPs."),
+    ("airstrike_25", "Fire Support", "airstrike_calls", 25, 200, "Call in 25 airstrikes."),
+    ("heli_25", "Air Cav", "helicopter_calls", 25, 300, "Call in 25 helicopters."),
+    ("nuke_1", "Nuclear Option", "nuke_victories", 1, 500, "Earn 1 nuclear victory."),
+    ("nuke_10", "Fallout", "nuke_victories", 10, 2000, "Earn 10 nuclear victories."),
+    ("matches_100", "Career Soldier", "games_played", 100, 300, "Play 100 matches."),
+    ("matches_1000", "Lifelong Warrior", "games_played", 1000, 1500, "Play 1,000 matches."),
+    ("playtime_24h", "Veteran", "play_time_seconds", 24 * 3600, 400, "Accumulate 24 hours played."),
+]
 RANK_COLORS = {
     "Recruit": "#5b5b5b",
     "Cadet": "#4a6a84",
@@ -168,10 +195,159 @@ def level_progress(xp_total):
     return level, remaining, threshold
 
 
+def level_progress_with_cap(xp_total, level_cap):
+    # Compute level progress with a maximum level cap.
+    level = 1
+    remaining = max(0, int(xp_total))
+    threshold = level_threshold(level)
+    while remaining >= threshold and level < level_cap:
+        remaining -= threshold
+        level += 1
+        threshold = level_threshold(level)
+    return level, remaining, threshold
+
+
 def rank_for_level(level):
     # Map each rank name to a 3-level span.
     index = max(0, min((int(level) - 1) // 3, len(PLAYER_RANKS) - 1))
     return PLAYER_RANKS[index]
+
+
+def apply_xp_and_progress(stats, xp_gain):
+    # Apply XP and update level/prestige/master state.
+    xp = int(stats.get("xp", 0)) + int(xp_gain)
+    prestige = int(stats.get("prestige", 0))
+    prestige_unlocked = bool(stats.get("prestige_unlocked", False))
+    master = bool(stats.get("master_prestige", False))
+    master_level = int(stats.get("master_level", 1))
+
+    while True:
+        if master:
+            level, remaining, threshold = level_progress_with_cap(xp, MASTER_MAX_LEVEL)
+            master_level = level
+            xp = remaining
+            break
+
+        level, remaining, threshold = level_progress_with_cap(xp, BASE_MAX_LEVEL)
+        if not prestige_unlocked:
+            if level < BASE_MAX_LEVEL or remaining < threshold:
+                stats["level"] = level
+                xp = remaining
+                break
+            prestige_unlocked = True
+            prestige = 1
+            stats["prestige"] = prestige
+            stats["level"] = 1
+            xp = remaining - threshold
+            continue
+
+        if level < BASE_MAX_LEVEL:
+            stats["level"] = level
+            xp = remaining
+            break
+
+        if remaining >= threshold:
+            remaining -= threshold
+            if prestige < PRESTIGE_MAX:
+                prestige += 1
+                stats["prestige"] = prestige
+                stats["level"] = 1
+                xp = remaining
+                continue
+            master = True
+            stats["master_prestige"] = True
+            stats["master_level"] = 1
+            xp = remaining
+            continue
+
+        stats["level"] = level
+        xp = remaining
+        break
+
+    stats["xp"] = xp
+    stats["prestige"] = prestige
+    stats["prestige_unlocked"] = prestige_unlocked
+    stats["master_prestige"] = master
+    stats["master_level"] = master_level
+
+
+def progress_state(stats, xp_gain=0):
+    # Preview progress without mutating stats.
+    xp = int(stats.get("xp", 0)) + int(xp_gain)
+    prestige = int(stats.get("prestige", 0))
+    prestige_unlocked = bool(stats.get("prestige_unlocked", False))
+    master = bool(stats.get("master_prestige", False))
+    master_level = int(stats.get("master_level", 1))
+
+    while True:
+        if master:
+            level, remaining, threshold = level_progress_with_cap(xp, MASTER_MAX_LEVEL)
+            master_level = level
+            return {
+                "level": level,
+                "xp_into": remaining,
+                "xp_needed": threshold,
+                "prestige": prestige,
+                "master": True,
+                "master_level": master_level,
+            }
+
+        level, remaining, threshold = level_progress_with_cap(xp, BASE_MAX_LEVEL)
+        if not prestige_unlocked:
+            if level < BASE_MAX_LEVEL or remaining < threshold:
+                return {
+                    "level": level,
+                    "xp_into": remaining,
+                    "xp_needed": threshold,
+                    "prestige": prestige,
+                    "master": False,
+                    "master_level": master_level,
+                    "prestige_unlocked": False,
+                }
+            prestige_unlocked = True
+            prestige = 1
+            xp = remaining - threshold
+            continue
+
+        if level < BASE_MAX_LEVEL:
+            return {
+                "level": level,
+                "xp_into": remaining,
+                "xp_needed": threshold,
+                "prestige": prestige,
+                "master": False,
+                "master_level": master_level,
+                "prestige_unlocked": prestige_unlocked,
+            }
+
+        if remaining >= threshold:
+            remaining -= threshold
+            if prestige < PRESTIGE_MAX:
+                prestige += 1
+                xp = remaining
+                continue
+            master = True
+            xp = remaining
+            continue
+
+        return {
+            "level": level,
+            "xp_into": remaining,
+            "xp_needed": threshold,
+            "prestige": prestige,
+            "master": False,
+            "master_level": master_level,
+            "prestige_unlocked": prestige_unlocked,
+        }
+
+
+def rank_display_from_progress(progress):
+    # Compose rank label based on a progress snapshot.
+    if progress.get("master"):
+        return f"Master of War {int(progress.get('master_level', 1))}"
+    prestige = int(progress.get("prestige", 0))
+    prefix = f"Prestige {prestige} " if prestige > 0 else ""
+    return f"{prefix}{rank_for_level(progress.get('level', 1))}"
 
 
 def camo_color(name):
@@ -197,8 +373,8 @@ def calculate_rates(attributes):
     total = sum(attributes.values())
     max_total = ATTRIBUTE_MAX * len(ATTRIBUTES)
     skill = total / max_total if max_total else 0.0
-    kills_per_min = 4 + 14 * skill
-    deaths_per_min = 14 - 10 * skill
+    kills_per_min = 2 + 7 * skill
+    deaths_per_min = 6 - 5 * skill
     return kills_per_min / 60.0, deaths_per_min / 60.0
 
 
@@ -236,6 +412,37 @@ def compute_xp_gain(kills, headshots, completed):
     return xp
 
 
+def achievement_value(profile, key):
+    # Resolve a stat value for achievements.
+    stats = ensure_stats(profile)
+    if key == "multi_kills":
+        return (
+            int(stats.get("double_kills", 0))
+            + int(stats.get("triple_kills", 0))
+            + int(stats.get("quad_kills", 0))
+            + int(stats.get("monster_kills", 0))
+            + int(stats.get("team_kills", 0))
+        )
+    if key == "xp_total":
+        return int(stats.get("xp", 0))
+    if key == "play_time_seconds":
+        return int(profile["player"].get("play_time_seconds", 0))
+    return int(stats.get(key, 0))
+
+
+def check_achievements(profile):
+    # Award new achievements and return bonus XP gained.
+    stats = ensure_stats(profile)
+    earned = stats.setdefault("achievements", {})
+    bonus_xp = 0
+    for ach_id, name, key, threshold, reward_xp, description in ACHIEVEMENTS:
+        value = achievement_value(profile, key)
+        if not earned.get(ach_id) and value >= threshold:
+            earned[ach_id] = True
+            bonus_xp += reward_xp
+    return bonus_xp
+
+
 def ensure_stats(profile):
     # Ensure the profile stats dict contains required keys.
     return profile["player"].setdefault(
@@ -250,6 +457,10 @@ def ensure_stats(profile):
             "headshots": 0,
             "xp": 0,
             "level": 1,
+            "prestige_unlocked": False,
+            "prestige": 0,
+            "master_prestige": False,
+            "master_level": 1,
             "weapons": {},
             "uap_calls": 0,
             "airstrike_calls": 0,
@@ -262,6 +473,7 @@ def ensure_stats(profile):
             "quad_kills": 0,
             "monster_kills": 0,
             "team_kills": 0,
+            "achievements": {},
         },
     )
 
@@ -363,8 +575,10 @@ def apply_offline_progress(profile, offline_seconds):
     stats["team_kills"] = int(stats.get("team_kills", 0)) + team_kills
 
     xp_gain = kills * 10 + headshots * 5 + completed_matches * 50
-    stats["xp"] = int(stats.get("xp", 0)) + xp_gain
-    stats["level"] = level_progress(stats["xp"])[0]
+    apply_xp_and_progress(stats, xp_gain)
+    bonus = check_achievements(profile)
+    if bonus:
+        apply_xp_and_progress(stats, bonus)
 
     weapons = stats.setdefault("weapons", {})
     weapon_stats = weapons.setdefault(weapon, {"xp": 0, "level": 1, "headshots": 0, "camo": "None"})
@@ -378,32 +592,7 @@ def apply_offline_progress(profile, offline_seconds):
 
 def add_kill_death_stats(loaded_profile, kills, deaths, headshots=0):
     # Accumulate kills, deaths, and headshots into the profile stats.
-    stats = loaded_profile["player"].setdefault(
-        "stats",
-        {
-            "games_played": 0,
-            "game_modes_played": {},
-            "maps_played": {},
-            "kills": 0,
-            "deaths": 0,
-            "longest_kill_streak": 0,
-            "headshots": 0,
-            "xp": 0,
-            "level": 1,
-            "weapons": {},
-            "uap_calls": 0,
-            "airstrike_calls": 0,
-            "helicopter_calls": 0,
-            "airstrike_kills": 0,
-            "helicopter_kills": 0,
-            "nuke_victories": 0,
-            "double_kills": 0,
-            "triple_kills": 0,
-            "quad_kills": 0,
-            "monster_kills": 0,
-            "team_kills": 0,
-        },
-    )
+    stats = ensure_stats(loaded_profile)
     stats["kills"] = int(stats.get("kills", 0)) + int(kills)
     stats["deaths"] = int(stats.get("deaths", 0)) + int(deaths)
     stats["headshots"] = int(stats.get("headshots", 0)) + int(headshots)
@@ -411,34 +600,8 @@ def add_kill_death_stats(loaded_profile, kills, deaths, headshots=0):
 
 def award_xp(loaded_profile, xp_gain):
     # Apply XP gain and update the stored level.
-    stats = loaded_profile["player"].setdefault(
-        "stats",
-        {
-            "games_played": 0,
-            "game_modes_played": {},
-            "maps_played": {},
-            "kills": 0,
-            "deaths": 0,
-            "longest_kill_streak": 0,
-            "headshots": 0,
-            "xp": 0,
-            "level": 1,
-            "weapons": {},
-            "uap_calls": 0,
-            "airstrike_calls": 0,
-            "helicopter_calls": 0,
-            "airstrike_kills": 0,
-            "helicopter_kills": 0,
-            "nuke_victories": 0,
-            "double_kills": 0,
-            "triple_kills": 0,
-            "quad_kills": 0,
-            "monster_kills": 0,
-            "team_kills": 0,
-        },
-    )
-    stats["xp"] = int(stats.get("xp", 0)) + int(xp_gain)
-    stats["level"] = level_progress(stats["xp"])[0]
+    stats = ensure_stats(loaded_profile)
+    apply_xp_and_progress(stats, xp_gain)
 
 
 def get_camo_for_headshots(headshot_count):
@@ -783,26 +946,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
     session_state["running"] = True
     session_state["phase"] = "playing"
     session_state["end_time"] = time.monotonic() + duration_seconds
-    stats = loaded_profile["player"].setdefault(
-        "stats",
-        {
-            "games_played": 0,
-            "game_modes_played": {},
-            "maps_played": {},
-            "kills": 0,
-            "deaths": 0,
-            "longest_kill_streak": 0,
-            "headshots": 0,
-            "xp": 0,
-            "level": 1,
-            "uap_calls": 0,
-            "airstrike_calls": 0,
-            "helicopter_calls": 0,
-            "airstrike_kills": 0,
-            "helicopter_kills": 0,
-            "nuke_victories": 0,
-        },
-    )
+    stats = ensure_stats(loaded_profile)
     session_state["kills"] = 0
     session_state["deaths"] = 0
     session_state["headshots"] = 0
@@ -896,6 +1040,9 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             session_state.get("weapon_name", "Ak-47"),
             session_state.get("xp_bonus", 0),
         )
+        bonus = check_achievements(loaded_profile)
+        if bonus:
+            award_xp(loaded_profile, bonus)
         loaded_profile["player"]["stats"].update({"longest_kill_streak": session_state["longest_streak"]})
         save_profile_data(loaded_profile, save_path)
         start_lobby_wait(
@@ -944,8 +1091,11 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
                 session_state.get("headshots", 0),
                 False,
             ) + session_state.get("xp_bonus", 0)
-            level, xp_into, xp_needed = level_progress(total_xp)
-            rank = rank_for_level(level)
+            preview = progress_state(stats, total_xp - stats.get("xp", 0))
+            level = preview["level"]
+            xp_into = preview["xp_into"]
+            xp_needed = preview["xp_needed"]
+            rank = rank_display_from_progress(preview)
             xp_var.set(f"{rank} | Level {level} | XP {xp_into}/{xp_needed}")
             session_state["ticker_id"] = root.after(1000, tick)
             return
@@ -1099,8 +1249,11 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             session_state.get("headshots", 0),
             False,
         ) + session_state.get("xp_bonus", 0)
-        level, xp_into, xp_needed = level_progress(total_xp)
-        rank = rank_for_level(level)
+        preview = progress_state(stats, total_xp - stats.get("xp", 0))
+        level = preview["level"]
+        xp_into = preview["xp_into"]
+        xp_needed = preview["xp_needed"]
+        rank = rank_display_from_progress(preview)
         xp_var.set(f"{rank} | Level {level} | XP {xp_into}/{xp_needed}")
         session_state["ticker_id"] = root.after(1000, tick)
 
@@ -1227,6 +1380,75 @@ def open_stats_window(root, session_state):
     )
     canvas.create_text(20, 235, text=summary, fill="#c9d4e2", anchor="w", font=("Segoe UI", 9))
 
+
+def open_achievements_window(root, loaded_profile):
+    # Display achievements with progress bars.
+    if not loaded_profile:
+        messagebox.showinfo("Achievements", "Load a player profile to view achievements.")
+        return
+
+    stats = ensure_stats(loaded_profile)
+    earned = stats.setdefault("achievements", {})
+
+    window = tk.Toplevel(root)
+    window.title("Achievements")
+    window.resizable(False, False)
+
+    tooltip = {"window": None, "label": None}
+
+    def show_tooltip(widget, text):
+        if tooltip["window"]:
+            tooltip["window"].destroy()
+        tw = tk.Toplevel(window)
+        tw.wm_overrideredirect(True)
+        tw.attributes("-topmost", True)
+        x = widget.winfo_rootx() + 10
+        y = widget.winfo_rooty() + 20
+        tw.geometry(f"+{x}+{y}")
+        label = tk.Label(tw, text=text, bg="#1b2230", fg="#c9d4e2", font=("Segoe UI", 9), padx=6, pady=4)
+        label.pack()
+        tooltip["window"] = tw
+        tooltip["label"] = label
+
+    def hide_tooltip(*_):
+        if tooltip["window"]:
+            tooltip["window"].destroy()
+            tooltip["window"] = None
+            tooltip["label"] = None
+
+    frame = tk.Frame(window)
+    frame.pack(padx=16, pady=16)
+
+    for ach_id, name, key, threshold, reward_xp, description in ACHIEVEMENTS:
+        value = achievement_value(loaded_profile, key)
+        done = bool(earned.get(ach_id))
+        display_value = min(value, threshold)
+        ratio = 1.0 if threshold == 0 else min(1.0, display_value / threshold)
+
+        title = tk.Label(
+            frame,
+            text=f"{name} (+{reward_xp} XP)",
+            font=("Segoe UI", 10),
+            fg="#f4c542" if done else "#7a7a7a",
+            anchor="w",
+        )
+        title.pack(fill="x")
+        title.bind("<Enter>", lambda e, text=description: show_tooltip(e.widget, text))
+        title.bind("<Leave>", hide_tooltip)
+
+        progress = tk.Canvas(frame, width=260, height=8, highlightthickness=0, bg="#1b2230")
+        progress.pack(pady=(2, 8))
+        fill_width = int(260 * ratio)
+        color = "#6bd98a" if done else "#4a6a84"
+        progress.create_rectangle(0, 0, fill_width, 8, fill=color, outline="")
+        progress.create_text(
+            130,
+            4,
+            text=f"{display_value}/{threshold}",
+            fill="#c9d4e2",
+            font=("Segoe UI", 8),
+        )
+
 def open_profile_window(root):
     # Profile creation dialog for attribute distribution and gamertag entry.
     window = tk.Toplevel(root)
@@ -1344,6 +1566,10 @@ def open_profile_window(root):
                 "headshots": 0,
                 "xp": 0,
                 "level": 1,
+                "prestige_unlocked": False,
+                "prestige": 0,
+                "master_prestige": False,
+                "master_level": 1,
                 "weapons": {},
                 "uap_calls": 0,
                 "airstrike_calls": 0,
@@ -1356,6 +1582,7 @@ def open_profile_window(root):
                 "quad_kills": 0,
                 "monster_kills": 0,
                 "team_kills": 0,
+                "achievements": {},
             },
         }
         save_player_profile(profile)
@@ -1409,8 +1636,11 @@ def view_player_profile(root, loaded_profile, timer_state):
     longest_streak = int(stats.get("longest_kill_streak", 0))
     headshots = int(stats.get("headshots", 0))
     xp_total = int(stats.get("xp", 0))
-    level, xp_into, xp_needed = level_progress(xp_total)
-    rank = rank_for_level(level)
+    progress = progress_state(stats)
+    level = progress["level"]
+    xp_into = progress["xp_into"]
+    xp_needed = progress["xp_needed"]
+    rank = rank_display_from_progress(progress)
 
     window = tk.Toplevel(root)
     window.title("Player Profile")
@@ -1744,6 +1974,14 @@ def main():
     )
     stats_button.pack(pady=4)
 
+    achievements_button = tk.Button(
+        menu_frame,
+        text="Achievements",
+        width=16,
+        command=lambda: open_achievements_window(root, loaded_profile["data"]),
+    )
+    achievements_button.pack(pady=4)
+
     def on_about():
         messagebox.showinfo(
             "About",
@@ -1786,6 +2024,9 @@ def main():
                 session_state.get("weapon_name", "Ak-47"),
                 session_state.get("xp_bonus", 0),
             )
+            bonus = check_achievements(loaded_profile["data"])
+            if bonus:
+                award_xp(loaded_profile["data"], bonus)
             loaded_profile["data"]["player"]["stats"].update(
                 {"longest_kill_streak": session_state.get("longest_streak", 0)}
             )
