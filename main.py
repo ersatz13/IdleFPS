@@ -2,7 +2,7 @@ import json
 import random
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
 
 # Core configuration for saves and attribute setup.
@@ -28,6 +28,103 @@ MAP_POOL = (
 )
 ENEMY_POOL = ("Rusher", "Camper", "BK randy")
 WEAPON_POOL = ("Ak-47", "M4A1", "MP5", "FAMAS", "G36C", "P90")
+TEAM_DEATHMATCH_KILL_CAP = 150
+DOMINATION_SCORE_CAP = 600
+FREE_FOR_ALL_KILL_CAP = 30
+PLAYER_TEAM_SIZE = 5
+ENEMY_TEAM_SIZE = 6
+AI_SKILL_RANGE = (0.6, 1.4)
+AI_KILL_RATE = 0.08
+THEME = {
+    "bg": "#0f141b",
+    "panel": "#141c26",
+    "panel_edge": "#1c2733",
+    "text": "#d6e2f0",
+    "muted": "#9fb0c3",
+    "accent": "#7fc7ff",
+    "button": "#1f2a36",
+    "button_hover": "#2a3947",
+    "primary": "#2b6cb0",
+    "primary_hover": "#3a7cc4",
+    "danger": "#7a3b3b",
+}
+WEAPON_ACHIEVEMENT_BASE = 100
+TEAMMATE_NAME_POOL = (
+    "Falcon",
+    "Ghost",
+    "Viper",
+    "Reaper",
+    "Nova",
+    "Rogue",
+    "Saber",
+    "Blaze",
+    "Echo",
+    "Ranger",
+    "Havoc",
+    "Atlas",
+    "Striker",
+    "Bishop",
+    "Cipher",
+    "Raven",
+    "Titan",
+    "Pulse",
+    "Arrow",
+    "Kodiak",
+    "Tracer",
+    "Lancer",
+    "Onyx",
+    "Phantom",
+    "Comet",
+    "Sledge",
+    "Tempest",
+    "Vector",
+    "Maverick",
+    "Glitch",
+    "Blitz",
+    "Specter",
+    "Nebula",
+    "Raptor",
+    "Vanguard",
+    "Nomad",
+)
+ENEMY_NAME_POOL = (
+    "Wraith",
+    "Marauder",
+    "Riot",
+    "Vandal",
+    "Drake",
+    "Mantis",
+    "Nightfall",
+    "Shade",
+    "Widow",
+    "Grim",
+    "Harpy",
+    "Grudge",
+    "Rage",
+    "Banshee",
+    "Scorch",
+    "Specter",
+    "Hollow",
+    "Venom",
+    "Raptor",
+    "Reckon",
+    "Havoc",
+    "Blight",
+    "Ruin",
+    "Vortex",
+    "Shatter",
+    "Onyx",
+    "Grimace",
+    "Karma",
+    "Razor",
+    "Grit",
+    "Prowler",
+    "Talon",
+    "Cinder",
+    "Fury",
+    "Rancor",
+    "Cipher",
+)
 CAMO_UNLOCKS = [
     (10, "Forest"),
     (25, "Digital"),
@@ -92,7 +189,10 @@ CAMO_COLORS = {
     "Platinum": "#c0c0c0",
     "Diamond": "#7fc7ff",
 }
-ACHIEVEMENTS = [
+ROMAN_NUMERALS = ("I", "II", "III", "IV", "V", "VI", "VII", "VIII")
+ACHIEVEMENT_GROWTH = 1.5
+KILL_ACHIEVEMENT_GROWTH = 2.0
+BASE_ACHIEVEMENTS = [
     ("kills_100", "Warpath I", "kills", 100, 50, "Reach 100 total kills."),
     ("kills_1000", "Warpath II", "kills", 1000, 200, "Reach 1,000 total kills."),
     ("kills_10000", "Apex Predator", "kills", 10000, 800, "Reach 10,000 total kills."),
@@ -107,7 +207,7 @@ ACHIEVEMENTS = [
     ("xp_10000", "Rising Star", "xp_total", 10000, 200, "Earn 10,000 total XP."),
     ("xp_100000", "Elite Operative", "xp_total", 100000, 800, "Earn 100,000 total XP."),
     ("xp_1000000", "Legend", "xp_total", 1000000, 3000, "Earn 1,000,000 total XP."),
-    ("uap_25", "Recon Specialist", "uap_calls", 25, 200, "Call in 25 UAPs."),
+    ("UAV_25", "Recon Specialist", "UAV_calls", 25, 200, "Call in 25 UAVs."),
     ("airstrike_25", "Fire Support", "airstrike_calls", 25, 200, "Call in 25 airstrikes."),
     ("heli_25", "Air Cav", "helicopter_calls", 25, 300, "Call in 25 helicopters."),
     ("nuke_1", "Nuclear Option", "nuke_victories", 1, 500, "Earn 1 nuclear victory."),
@@ -116,6 +216,54 @@ ACHIEVEMENTS = [
     ("matches_1000", "Lifelong Warrior", "games_played", 1000, 1500, "Play 1,000 matches."),
     ("playtime_24h", "Veteran", "play_time_seconds", 24 * 3600, 400, "Accumulate 24 hours played."),
 ]
+
+
+def weapon_achievement_id(weapon_name):
+    # Normalize weapon names into consistent achievement ids.
+    cleaned = "".join(ch.lower() if ch.isalnum() else "_" for ch in weapon_name).strip("_")
+    return f"weapon_kills_{cleaned}"
+
+
+WEAPON_ACHIEVEMENTS = [
+    (
+        weapon_achievement_id(weapon),
+        f"{weapon} Warpath",
+        f"weapon_kills:{weapon}",
+        WEAPON_ACHIEVEMENT_BASE,
+        50,
+        f"Reach {WEAPON_ACHIEVEMENT_BASE} kills with {weapon}.",
+    )
+    for weapon in WEAPON_POOL
+]
+
+
+def expand_achievements(base_achievements, levels=8):
+    # Build multi-level achievements with non-linear growth per tier.
+    expanded = []
+    for ach_id, name, key, threshold, reward_xp, description in base_achievements:
+        prev_threshold = None
+        prev_reward = None
+        for level in range(1, levels + 1):
+            level_id = ach_id if level == 1 else f"{ach_id}_l{level}"
+            level_name = name if level == 1 else f"{name} Tier {ROMAN_NUMERALS[level - 1]}"
+            if key == "kills" or key.startswith("weapon_kills:"):
+                tier_growth = KILL_ACHIEVEMENT_GROWTH
+            else:
+                tier_growth = ACHIEVEMENT_GROWTH
+            growth = tier_growth ** (level - 1)
+            level_threshold = int(round(threshold * growth))
+            level_reward = int(round(reward_xp * growth))
+            if level == levels and prev_threshold is not None and prev_reward is not None:
+                level_threshold = prev_threshold * 4
+                level_reward = prev_reward * 4
+            level_description = f"{description} (Level {level} of {levels})"
+            expanded.append((level_id, level_name, key, level_threshold, level_reward, level_description))
+            prev_threshold = level_threshold
+            prev_reward = level_reward
+    return expanded
+
+
+ACHIEVEMENTS = expand_achievements(BASE_ACHIEVEMENTS + WEAPON_ACHIEVEMENTS)
 RANK_COLORS = {
     "Recruit": "#5b5b5b",
     "Cadet": "#4a6a84",
@@ -378,6 +526,47 @@ def calculate_rates(attributes):
     return kills_per_min / 60.0, deaths_per_min / 60.0
 
 
+def build_match_rosters(player_name):
+    # Create simulated teammate and enemy rosters with randomized skills.
+    teammates = []
+    teammate_count = max(1, PLAYER_TEAM_SIZE) - 1
+    teammate_names = list(TEAMMATE_NAME_POOL)
+    random.shuffle(teammate_names)
+    for idx in range(1, teammate_count + 1):
+        name = teammate_names.pop() if teammate_names else f"Teammate {idx}"
+        teammates.append(
+            {
+                "name": name,
+                "skill": random.uniform(*AI_SKILL_RANGE),
+                "kills": 0,
+                "deaths": 0,
+                "is_player": False,
+            }
+        )
+    enemies = []
+    enemy_names = list(ENEMY_NAME_POOL)
+    random.shuffle(enemy_names)
+    for idx in range(1, max(1, ENEMY_TEAM_SIZE) + 1):
+        name = enemy_names.pop() if enemy_names else f"Enemy {idx}"
+        enemies.append(
+            {
+                "name": name,
+                "skill": random.uniform(*AI_SKILL_RANGE),
+                "kills": 0,
+                "deaths": 0,
+                "is_player": False,
+            }
+        )
+    player_entry = {
+        "name": player_name,
+        "skill": 1.0,
+        "kills": 0,
+        "deaths": 0,
+        "is_player": True,
+    }
+    return [player_entry] + teammates, enemies, player_entry
+
+
 def compute_attribute_effects(attributes, options=None):
     # Translate attributes into explicit gameplay effects, with optional overrides.
     target = int(attributes.get("Target Acquisition", 0))
@@ -423,11 +612,24 @@ def achievement_value(profile, key):
             + int(stats.get("monster_kills", 0))
             + int(stats.get("team_kills", 0))
         )
+    if key.startswith("weapon_kills:"):
+        weapon_name = key.split(":", 1)[1]
+        weapons = stats.get("weapons", {})
+        weapon_stats = weapons.get(weapon_name, {})
+        return int(weapon_stats.get("kills", 0))
     if key == "xp_total":
-        return int(stats.get("xp", 0))
+        return int(stats.get("lifetime_xp", stats.get("xp", 0)))
     if key == "play_time_seconds":
         return int(profile["player"].get("play_time_seconds", 0))
     return int(stats.get(key, 0))
+
+
+def achievement_base_and_level(achievement_id):
+    # Split a level-suffixed achievement id into base id and level.
+    parts = achievement_id.rsplit("_l", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[0], int(parts[1])
+    return achievement_id, 1
 
 
 def check_achievements(profile):
@@ -435,9 +637,22 @@ def check_achievements(profile):
     stats = ensure_stats(profile)
     earned = stats.setdefault("achievements", {})
     bonus_xp = 0
-    for ach_id, name, key, threshold, reward_xp, description in ACHIEVEMENTS:
+    grouped = {}
+    for entry in ACHIEVEMENTS:
+        base_id, level = achievement_base_and_level(entry[0])
+        grouped.setdefault(base_id, []).append((level, entry))
+    for base_id, levels in grouped.items():
+        levels.sort(key=lambda item: item[0])
+        next_entry = None
+        for _, entry in levels:
+            if not earned.get(entry[0]):
+                next_entry = entry
+                break
+        if not next_entry:
+            continue
+        ach_id, name, key, threshold, reward_xp, description = next_entry
         value = achievement_value(profile, key)
-        if not earned.get(ach_id) and value >= threshold:
+        if value >= threshold:
             earned[ach_id] = True
             bonus_xp += reward_xp
     return bonus_xp
@@ -445,24 +660,29 @@ def check_achievements(profile):
 
 def ensure_stats(profile):
     # Ensure the profile stats dict contains required keys.
-    return profile["player"].setdefault(
+    stats = profile["player"].setdefault(
         "stats",
         {
             "games_played": 0,
             "game_modes_played": {},
+            "game_mode_wins": {},
+            "game_mode_losses": {},
             "maps_played": {},
             "kills": 0,
             "deaths": 0,
+            "wins": 0,
+            "losses": 0,
             "longest_kill_streak": 0,
             "headshots": 0,
             "xp": 0,
+            "lifetime_xp": 0,
             "level": 1,
             "prestige_unlocked": False,
             "prestige": 0,
             "master_prestige": False,
             "master_level": 1,
             "weapons": {},
-            "uap_calls": 0,
+            "UAV_calls": 0,
             "airstrike_calls": 0,
             "helicopter_calls": 0,
             "airstrike_kills": 0,
@@ -474,8 +694,12 @@ def ensure_stats(profile):
             "monster_kills": 0,
             "team_kills": 0,
             "achievements": {},
+            "match_history": [],
         },
     )
+    if "lifetime_xp" not in stats:
+        stats["lifetime_xp"] = int(stats.get("xp", 0))
+    return stats
 
 
 def apply_offline_progress(profile, offline_seconds):
@@ -509,7 +733,7 @@ def apply_offline_progress(profile, offline_seconds):
     headshots = int(kills * headshot_rate)
 
     # Simulate streak rewards from offline matches.
-    uap_calls = 0
+    UAV_calls = 0
     airstrike_calls = 0
     helicopter_calls = 0
     nuke_victories = 0
@@ -525,7 +749,7 @@ def apply_offline_progress(profile, offline_seconds):
         kills_per_match = kills / completed_matches
         for _ in range(completed_matches):
             if kills_per_match >= 3:
-                uap_calls += 1
+                UAV_calls += 1
             if kills_per_match >= 5:
                 airstrike_calls += 1
                 airstrike_kills += random.randint(0, 6)
@@ -556,13 +780,24 @@ def apply_offline_progress(profile, offline_seconds):
 
     modes = stats.setdefault("game_modes_played", {})
     modes[mode] = int(modes.get(mode, 0)) + completed_matches
+    mode_wins = stats.setdefault("game_mode_wins", {})
+    mode_losses = stats.setdefault("game_mode_losses", {})
 
     maps = stats.setdefault("maps_played", {})
     for _ in range(completed_matches):
         name = random.choice(MAP_POOL)
         maps[name] = int(maps.get(name, 0)) + 1
+        # Simulate match outcomes per completed offline match.
+        skill = sum(attributes.values()) / (ATTRIBUTE_MAX * len(ATTRIBUTES)) if attributes else 0.5
+        win_chance = 0.45 + 0.4 * skill
+        if random.random() < win_chance:
+            stats["wins"] = int(stats.get("wins", 0)) + 1
+            mode_wins[mode] = int(mode_wins.get(mode, 0)) + 1
+        else:
+            stats["losses"] = int(stats.get("losses", 0)) + 1
+            mode_losses[mode] = int(mode_losses.get(mode, 0)) + 1
 
-    stats["uap_calls"] = int(stats.get("uap_calls", 0)) + uap_calls
+    stats["UAV_calls"] = int(stats.get("UAV_calls", 0)) + UAV_calls
     stats["airstrike_calls"] = int(stats.get("airstrike_calls", 0)) + airstrike_calls
     stats["helicopter_calls"] = int(stats.get("helicopter_calls", 0)) + helicopter_calls
     stats["airstrike_kills"] = int(stats.get("airstrike_kills", 0)) + airstrike_kills
@@ -575,16 +810,22 @@ def apply_offline_progress(profile, offline_seconds):
     stats["team_kills"] = int(stats.get("team_kills", 0)) + team_kills
 
     xp_gain = kills * 10 + headshots * 5 + completed_matches * 50
+    stats["lifetime_xp"] = int(stats.get("lifetime_xp", 0)) + int(xp_gain)
     apply_xp_and_progress(stats, xp_gain)
     bonus = check_achievements(profile)
     if bonus:
+        stats["lifetime_xp"] = int(stats.get("lifetime_xp", 0)) + int(bonus)
         apply_xp_and_progress(stats, bonus)
 
     weapons = stats.setdefault("weapons", {})
-    weapon_stats = weapons.setdefault(weapon, {"xp": 0, "level": 1, "headshots": 0, "camo": "None"})
+    weapon_stats = weapons.setdefault(
+        weapon,
+        {"xp": 0, "level": 1, "headshots": 0, "camo": "None", "kills": 0},
+    )
     weapon_stats["xp"] = int(weapon_stats.get("xp", 0)) + xp_gain + headshots * 5
     weapon_stats["level"] = level_progress(weapon_stats["xp"])[0]
     weapon_stats["headshots"] = int(weapon_stats.get("headshots", 0)) + headshots
+    weapon_stats["kills"] = int(weapon_stats.get("kills", 0)) + kills
     weapon_stats["camo"] = get_camo_for_headshots(weapon_stats["headshots"])
 
     profile["player"]["play_time_seconds"] = int(profile["player"].get("play_time_seconds", 0)) + int(offline_seconds)
@@ -601,6 +842,7 @@ def add_kill_death_stats(loaded_profile, kills, deaths, headshots=0):
 def award_xp(loaded_profile, xp_gain):
     # Apply XP gain and update the stored level.
     stats = ensure_stats(loaded_profile)
+    stats["lifetime_xp"] = int(stats.get("lifetime_xp", 0)) + int(xp_gain)
     apply_xp_and_progress(stats, xp_gain)
 
 
@@ -613,14 +855,18 @@ def get_camo_for_headshots(headshot_count):
     return camo
 
 
-def award_weapon_xp(loaded_profile, weapon_name, xp_gain, headshots=0):
+def award_weapon_xp(loaded_profile, weapon_name, xp_gain, headshots=0, kills=0):
     # Track per-weapon progression and camo unlocks.
     stats = loaded_profile["player"].setdefault("stats", {})
     weapons = stats.setdefault("weapons", {})
-    weapon = weapons.setdefault(weapon_name, {"xp": 0, "level": 1, "headshots": 0, "camo": "None"})
+    weapon = weapons.setdefault(
+        weapon_name,
+        {"xp": 0, "level": 1, "headshots": 0, "camo": "None", "kills": 0},
+    )
     weapon["xp"] = int(weapon.get("xp", 0)) + int(xp_gain)
     weapon["level"] = level_progress(weapon["xp"])[0]
     weapon["headshots"] = int(weapon.get("headshots", 0)) + int(headshots)
+    weapon["kills"] = int(weapon.get("kills", 0)) + int(kills)
     weapon["camo"] = get_camo_for_headshots(weapon["headshots"])
 
 
@@ -633,6 +879,20 @@ def trigger_nuke(session_state, stats, now, schedule_end, force=False):
     session_state["nuke_until"] = now + 3
     session_state["kills"] += 6
     session_state["xp_bonus"] += 6 * 10
+    team_kills = session_state.get("team_kills")
+    if team_kills:
+        team_kills["player"] += 6
+    if session_state.get("player_entry"):
+        session_state["player_entry"]["kills"] += 6
+    game_mode = session_state.get("game_mode")
+    if game_mode == "Free for all":
+        roster = session_state.get("teams", {}).get("player_team", [])
+        targets = [entry for entry in roster if not entry.get("is_player")]
+    else:
+        targets = session_state.get("teams", {}).get("enemy_team", [])
+    for _ in range(6):
+        if targets:
+            random.choice(targets)["deaths"] += 1
     session_state["end_time"] = session_state["nuke_until"]
     schedule_end(int((session_state["nuke_until"] - now) * 1000))
 
@@ -651,7 +911,7 @@ def show_nuke_prompt(root, session_state, stats, schedule_end):
         return
     prompt = tk.Toplevel(root)
     prompt.title("Nuclear Victory")
-    prompt.resizable(False, False)
+    prompt.resizable(True, True)
 
     label = tk.Label(
         prompt,
@@ -691,14 +951,17 @@ def start_doomguy_animation(root, session_state):
         return
     window = tk.Toplevel(root)
     window.title("Match View")
-    window.resizable(False, False)
+    window.resizable(True, True)
 
-    canvas = tk.Canvas(window, width=320, height=200, bg="#101820", highlightthickness=0)
-    canvas.pack()
+    canvas = tk.Canvas(window, width=320, height=240, bg="#101820", highlightthickness=0)
+    canvas.pack(fill="both", expand=True)
 
     session_state["anim_window"] = window
     session_state["anim_canvas"] = canvas
     session_state["anim_frame"] = 0
+    open_callback = session_state.get("match_view_opened_callback")
+    if open_callback:
+        open_callback()
 
     def on_close():
         anim_after_id = session_state.get("anim_after_id")
@@ -709,6 +972,9 @@ def start_doomguy_animation(root, session_state):
         session_state["anim_window"] = None
         session_state["anim_canvas"] = None
         session_state["anim_frame"] = 0
+        close_callback = session_state.get("match_view_closed_callback")
+        if close_callback:
+            close_callback()
 
     window.protocol("WM_DELETE_WINDOW", on_close)
 
@@ -717,19 +983,75 @@ def start_doomguy_animation(root, session_state):
             return
         frame = session_state.get("anim_frame", 0)
         canvas.delete("all")
+        scorebar_height = 24
+        offset_y = scorebar_height
+        team_scores = session_state.get("team_scores", {"player": 0, "enemy": 0})
+
+        canvas.create_rectangle(0, 0, 320, scorebar_height, fill="#151c28", outline="")
+        if session_state.get("game_mode") == "Free for all":
+            left_label = "You"
+            right_label = "Leader"
+        else:
+            left_label = "Your Team"
+            right_label = "Enemy"
+        canvas.create_text(
+            8,
+            scorebar_height // 2,
+            text=f"{left_label}: {int(team_scores.get('player', 0))}",
+            fill="#c9d4e2",
+            font=("Segoe UI", 9),
+            anchor="w",
+        )
+        canvas.create_text(
+            312,
+            scorebar_height // 2,
+            text=f"{right_label}: {int(team_scores.get('enemy', 0))}",
+            fill="#f0b1b1",
+            font=("Segoe UI", 9),
+            anchor="e",
+        )
+        if session_state.get("game_mode") == "Domination":
+            control_points = session_state.get("control_points", [])
+            colors = {"player": "#6bd98a", "enemy": "#f07070", None: "#5b5b5b"}
+            labels = ["A", "B", "C"]
+            start_x = 130
+            for idx, label in enumerate(labels):
+                point = control_points[idx] if idx < len(control_points) else {"owner": None}
+                owner = point.get("owner")
+                x = start_x + idx * 24
+                canvas.create_oval(x, 6, x + 10, 16, fill=colors.get(owner, "#5b5b5b"), outline="")
+                canvas.create_text(x + 5, 18, text=label, fill="#c9d4e2", font=("Segoe UI", 7))
 
         # Simple pseudo-3D corridor.
-        canvas.create_rectangle(0, 0, 320, 80, fill="#1a2636", outline="")
-        canvas.create_polygon(0, 80, 320, 80, 260, 200, 60, 200, fill="#0d131a", outline="")
+        canvas.create_rectangle(0, offset_y, 320, offset_y + 80, fill="#1a2636", outline="")
+        canvas.create_polygon(
+            0,
+            offset_y + 80,
+            320,
+            offset_y + 80,
+            260,
+            offset_y + 200,
+            60,
+            offset_y + 200,
+            fill="#0d131a",
+            outline="",
+        )
         for i in range(6):
             offset = (frame * 6 + i * 40) % 240
             left = 60 + offset * 0.3
             right = 260 - offset * 0.3
-            y = 80 + offset * 0.5
+            y = offset_y + 80 + offset * 0.5
             canvas.create_line(left, y, right, y, fill="#243447")
 
         # Enemies to pick from (always visible).
-        positions = [(60, 130), (160, 130), (260, 130), (80, 160), (160, 170), (240, 160)]
+        positions = [
+            (60, offset_y + 130),
+            (160, offset_y + 130),
+            (260, offset_y + 130),
+            (80, offset_y + 160),
+            (160, offset_y + 170),
+            (240, offset_y + 160),
+        ]
         enemies = session_state.get("encounter_enemies", [])
         last_kill_time = session_state.get("last_kill_time", 0)
         flash_hit = time.monotonic() - last_kill_time < 0.6
@@ -737,7 +1059,10 @@ def start_doomguy_animation(root, session_state):
 
         for idx, name in enumerate(enemies):
             ex, ey = positions[idx % len(positions)]
+            # Enemy with shadow and highlight for depth.
+            canvas.create_oval(ex - 8, ey + 6, ex + 8, ey + 10, fill="#1a1212", outline="")
             canvas.create_oval(ex - 10, ey - 10, ex + 10, ey + 10, fill="#8b2d2d", outline="")
+            canvas.create_oval(ex - 6, ey - 8, ex + 2, ey, fill="#a94343", outline="")
             if idx in hit_indices:
                 canvas.create_oval(ex - 16, ey - 16, ex + 16, ey + 16, outline="#f0d24b", width=2)
                 canvas.create_line(ex - 6, ey, ex - 2, ey, fill="#f0d24b", width=2)
@@ -751,26 +1076,35 @@ def start_doomguy_animation(root, session_state):
         if time.monotonic() >= respawn_until:
             bob = 2 if frame % 10 < 5 else 0
             x = 160 + (frame % 40 - 20) * 0.6
-            y = 120 + bob
+            y = offset_y + 120 + bob
+            # Ground shadow.
+            canvas.create_oval(x - 12, y + 26, x + 12, y + 32, fill="#0f1118", outline="")
+            # Head with highlight.
             canvas.create_oval(x - 8, y - 18, x + 8, y - 2, fill="#c89b6d", outline="")
-            canvas.create_line(x, y - 2, x, y + 20, fill="#c95738", width=3)
+            canvas.create_oval(x - 6, y - 16, x - 1, y - 9, fill="#deb894", outline="")
+            # Torso with shading.
+            canvas.create_line(x, y - 2, x, y + 20, fill="#c95738", width=4)
+            canvas.create_line(x + 2, y - 2, x + 2, y + 20, fill="#a7462f", width=2)
+            # Legs with depth.
             leg_offset = 6 if frame % 10 < 5 else -6
             canvas.create_line(x, y + 20, x - 6, y + 36 + leg_offset, fill="#7b3f2a", width=3)
-            canvas.create_line(x, y + 20, x + 6, y + 36 - leg_offset, fill="#7b3f2a", width=3)
+            canvas.create_line(x, y + 20, x + 6, y + 36 - leg_offset, fill="#5f2e1f", width=3)
+            # Arms with slight highlight.
             canvas.create_line(x - 10, y + 6, x + 10, y + 10, fill="#c95738", width=3)
+            canvas.create_line(x - 10, y + 7, x + 10, y + 11, fill="#b14c35", width=1)
 
         # Kill feedback.
         if time.monotonic() - last_kill_time < 1.0:
             kill_count = session_state.get("last_kill_count", 1)
             label = "Eliminated enemy!" if kill_count == 1 else f"Eliminated {kill_count} enemies!"
-            canvas.create_text(160, 20, text=label, fill="#f0d24b", font=("Segoe UI", 10))
+            canvas.create_text(160, offset_y + 20, text=label, fill="#f0d24b", font=("Segoe UI", 10))
 
         # Death/respawn feedback.
         if time.monotonic() < respawn_until:
             seconds_left = max(1, int(respawn_until - time.monotonic()))
             canvas.create_text(
                 160,
-                40,
+                offset_y + 40,
                 text=f"Respawning in {seconds_left}...",
                 fill="#ff6b6b",
                 font=("Segoe UI", 10),
@@ -782,7 +1116,14 @@ def start_doomguy_animation(root, session_state):
         feed = [(t, text) for t, text in feed if now - t < 6]
         session_state["kill_feed"] = feed
         for idx, (_, text) in enumerate(feed[-4:]):
-            canvas.create_text(10, 12 + idx * 12, text=text, fill="#d5e3f0", font=("Segoe UI", 8), anchor="w")
+            canvas.create_text(
+                10,
+                offset_y + 12 + idx * 12,
+                text=text,
+                fill="#d5e3f0",
+                font=("Segoe UI", 8),
+                anchor="w",
+            )
 
         # Streak rewards visuals.
         now = time.monotonic()
@@ -791,37 +1132,67 @@ def start_doomguy_animation(root, session_state):
         nuke_until = session_state.get("nuke_until", 0)
         if now < nuke_until:
             radius = 30 + (1 - (nuke_until - now) / 3.0) * 120
-            canvas.create_oval(160 - radius, 100 - radius, 160 + radius, 100 + radius, fill="#f4b33a", outline="")
+            canvas.create_oval(
+                160 - radius,
+                offset_y + 100 - radius,
+                160 + radius,
+                offset_y + 100 + radius,
+                fill="#f4b33a",
+                outline="",
+            )
+            canvas.create_oval(
+                160 - radius * 1.1,
+                offset_y + 100 - radius * 1.1,
+                160 + radius * 1.1,
+                offset_y + 100 + radius * 1.1,
+                outline="#ffd37a",
+                width=2,
+            )
             canvas.create_oval(
                 160 - radius * 0.7,
-                100 - radius * 0.7,
+                offset_y + 100 - radius * 0.7,
                 160 + radius * 0.7,
-                100 + radius * 0.7,
+                offset_y + 100 + radius * 0.7,
                 fill="#ff6b3a",
                 outline="",
             )
-            canvas.create_text(160, 100, text="NUCLEAR VICTORY", fill="#ffffff", font=("Segoe UI", 12))
+            canvas.create_text(160, offset_y + 100, text="NUCLEAR VICTORY", fill="#ffffff", font=("Segoe UI", 12))
 
-        uap_start = rewards.get("uap")
-        if uap_start:
-            elapsed = now - uap_start
+        UAV_start = rewards.get("UAV")
+        if UAV_start:
+            elapsed = now - UAV_start
             if elapsed <= 3.0:
                 pulse = int(elapsed // 1.0)
                 progress = (elapsed % 1.0) / 1.0
                 radius = 20 + progress * 90
                 alpha = int(255 * (1 - progress))
                 color = f"#{alpha:02x}ff{alpha:02x}"
-                canvas.create_oval(160 - radius, 100 - radius, 160 + radius, 100 + radius, outline=color, width=2)
-                canvas.create_text(160, 70, text="UAP Sweep", fill="#9ad1ff", font=("Segoe UI", 9))
+                canvas.create_oval(
+                    160 - radius,
+                    offset_y + 100 - radius,
+                    160 + radius,
+                    offset_y + 100 + radius,
+                    outline=color,
+                    width=2,
+                )
+                canvas.create_oval(
+                    160 - radius * 0.7,
+                    offset_y + 100 - radius * 0.7,
+                    160 + radius * 0.7,
+                    offset_y + 100 + radius * 0.7,
+                    outline="#7fc7ff",
+                    width=1,
+                )
+                canvas.create_text(160, offset_y + 70, text="UAV Sweep", fill="#9ad1ff", font=("Segoe UI", 9))
             else:
-                session_state["streak_rewards"]["uap"] = None
+                session_state["streak_rewards"]["UAV"] = None
 
         air_start = rewards.get("airstrike")
         if air_start:
             elapsed = now - air_start
             if elapsed <= 3.0:
                 x = -40 + (elapsed / 3.0) * 400
-                y = 30
+                y = offset_y + 30
                 canvas.create_polygon(
                     x,
                     y,
@@ -832,7 +1203,17 @@ def start_doomguy_animation(root, session_state):
                     fill="#cfd8e3",
                     outline="",
                 )
-                canvas.create_text(160, 55, text="Airstrike inbound", fill="#f4c542", font=("Segoe UI", 9))
+                canvas.create_polygon(
+                    x - 10,
+                    y + 8,
+                    x + 8,
+                    y + 12,
+                    x - 10,
+                    y + 16,
+                    fill="#8da0b0",
+                    outline="",
+                )
+                canvas.create_text(160, offset_y + 55, text="Airstrike inbound", fill="#f4c542", font=("Segoe UI", 9))
             else:
                 session_state["streak_rewards"]["airstrike"] = None
 
@@ -841,13 +1222,15 @@ def start_doomguy_animation(root, session_state):
             elapsed = now - heli_start
             if elapsed <= 8.0:
                 x = 30 + (elapsed / 8.0) * 240
-                y = 40
+                y = offset_y + 40
                 canvas.create_rectangle(x, y, x + 40, y + 14, fill="#6b8c8e", outline="")
+                canvas.create_rectangle(x, y + 8, x + 40, y + 14, fill="#4f6a6b", outline="")
                 canvas.create_rectangle(x + 10, y - 8, x + 30, y, fill="#6b8c8e", outline="")
                 rotor_offset = 6 if int(elapsed * 10) % 2 == 0 else -6
                 canvas.create_line(x + 20 - 14, y - 10, x + 20 + 14, y - 10, fill="#d0d7de", width=2)
                 canvas.create_line(x + 20, y - 10 - rotor_offset, x + 20, y - 10 + rotor_offset, fill="#d0d7de", width=2)
-                canvas.create_text(160, 75, text="Helicopter support", fill="#8ef5b3", font=("Segoe UI", 9))
+                canvas.create_oval(x - 6, y + 6, x + 6, y + 16, fill="#263338", outline="")
+                canvas.create_text(160, offset_y + 75, text="Helicopter support", fill="#8ef5b3", font=("Segoe UI", 9))
             else:
                 session_state["streak_rewards"]["helicopter"] = None
 
@@ -855,6 +1238,102 @@ def start_doomguy_animation(root, session_state):
         session_state["anim_after_id"] = root.after(80, draw_scene)
 
     draw_scene()
+
+
+def start_lobby_view(root, session_state, wait_seconds):
+    # Show a lobby roster that fills in over the waiting period.
+    if session_state.get("anim_window"):
+        return
+    window = tk.Toplevel(root)
+    window.title("Match Lobby")
+    window.resizable(True, True)
+
+    canvas = tk.Canvas(window, width=320, height=240, bg="#101820", highlightthickness=0)
+    canvas.pack(fill="both", expand=True)
+
+    session_state["anim_window"] = window
+    session_state["anim_canvas"] = canvas
+    session_state["anim_frame"] = 0
+    session_state["lobby_start"] = time.monotonic()
+    session_state["lobby_duration"] = max(1, int(wait_seconds))
+    roster = session_state.get("next_match_roster", {})
+    fill_order = []
+    for entry in roster.get("player_team", []):
+        fill_order.append(("player", entry.get("name", "Unknown")))
+    for entry in roster.get("enemy_team", []):
+        fill_order.append(("enemy", entry.get("name", "Unknown")))
+    random.shuffle(fill_order)
+    session_state["lobby_fill_order"] = fill_order
+
+    def on_close():
+        anim_after_id = session_state.get("anim_after_id")
+        if anim_after_id:
+            root.after_cancel(anim_after_id)
+            session_state["anim_after_id"] = None
+        window.destroy()
+        session_state["anim_window"] = None
+        session_state["anim_canvas"] = None
+        session_state["anim_frame"] = 0
+        close_callback = session_state.get("match_view_closed_callback")
+        if close_callback:
+            close_callback()
+
+    window.protocol("WM_DELETE_WINDOW", on_close)
+    open_callback = session_state.get("match_view_opened_callback")
+    if open_callback:
+        open_callback()
+
+    def draw_lobby():
+        if session_state.get("phase") != "waiting" or session_state.get("anim_canvas") is None:
+            return
+        canvas.delete("all")
+        now = time.monotonic()
+        elapsed = now - session_state.get("lobby_start", now)
+        duration = max(1, session_state.get("lobby_duration", 1))
+        progress = min(1.0, elapsed / duration)
+
+        roster = session_state.get("next_match_roster", {})
+        player_team = roster.get("player_team", [])
+        enemy_team = roster.get("enemy_team", [])
+        total_players = len(player_team) + len(enemy_team)
+        visible_count = int(round(total_players * progress))
+        fill_order = session_state.get("lobby_fill_order", [])
+        visible_entries = fill_order[:visible_count]
+        player_names = [name for team, name in visible_entries if team == "player"]
+        enemy_names = [name for team, name in visible_entries if team == "enemy"]
+
+        canvas.create_text(160, 16, text="Loading Lobby...", fill="#c9d4e2", font=("Segoe UI", 11))
+        canvas.create_text(
+            160,
+            36,
+            text=f"{int(progress * 100)}% Ready",
+            fill="#7fc7ff",
+            font=("Segoe UI", 9),
+        )
+        canvas.create_line(12, 48, 308, 48, fill="#243447")
+
+        left_x = 20
+        right_x = 180
+        y_start = 60
+        line_height = 18
+        canvas.create_text(left_x, y_start - 14, text="Your Team", fill="#6bd98a", anchor="w", font=("Segoe UI", 9))
+        for idx, name in enumerate(player_names):
+            canvas.create_text(left_x, y_start + idx * line_height, text=name, fill="#c9d4e2", anchor="w")
+
+        canvas.create_text(
+            right_x,
+            y_start - 14,
+            text="Enemy Team",
+            fill="#f07070",
+            anchor="w",
+            font=("Segoe UI", 9),
+        )
+        for e_idx, name in enumerate(enemy_names):
+            canvas.create_text(right_x, y_start + e_idx * line_height, text=name, fill="#c9d4e2", anchor="w")
+
+        session_state["anim_after_id"] = root.after(200, draw_lobby)
+
+    draw_lobby()
 
 
 def stop_game_session(root, session_state, status_var, timer_var, map_var, kd_var, xp_var):
@@ -909,7 +1388,16 @@ def start_lobby_wait(root, session_state, status_var, timer_var, map_var, kd_var
         session_state["anim_canvas"] = None
         session_state["anim_frame"] = 0
     session_state["phase"] = "waiting"
-    wait_seconds = random.randint(12, 35)
+    wait_seconds = random.randint(12, 55)
+    if loaded_profile:
+        player_name = loaded_profile["player"].get("gamertag", "Player")
+        player_team, enemy_team, player_entry = build_match_rosters(player_name)
+        session_state["next_match_roster"] = {
+            "player_team": player_team,
+            "enemy_team": enemy_team,
+            "player_entry": player_entry,
+        }
+    start_lobby_view(root, session_state, wait_seconds)
     session_state["after_id"] = root.after(
         wait_seconds * 1000,
         lambda: start_game_session(
@@ -942,7 +1430,10 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
     game_mode = defaults["game_mode"]
     map_name = random.choice(MAP_POOL)
     attributes = loaded_profile["player"].get("attributes", {})
-    duration_seconds = random.randint(8, 13) * 60
+    if game_mode == "Domination":
+        duration_seconds = 14 * 60
+    else:
+        duration_seconds = random.randint(8, 13) * 60
     session_state["running"] = True
     session_state["phase"] = "playing"
     session_state["end_time"] = time.monotonic() + duration_seconds
@@ -961,12 +1452,48 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
     session_state["last_kill_count"] = 0
     session_state["headshots_in_last_kill"] = 0
     session_state["kill_feed"] = []
+    if session_state.get("anim_window"):
+        anim_after_id = session_state.get("anim_after_id")
+        if anim_after_id:
+            root.after_cancel(anim_after_id)
+            session_state["anim_after_id"] = None
+        session_state["anim_window"].destroy()
+        session_state["anim_window"] = None
+        session_state["anim_canvas"] = None
+        session_state["anim_frame"] = 0
+
     session_state["player_name"] = loaded_profile["player"].get("gamertag", "Player")
+    next_roster = session_state.pop("next_match_roster", None)
+    if next_roster:
+        player_team = next_roster.get("player_team", [])
+        enemy_team = next_roster.get("enemy_team", [])
+        player_entry = next_roster.get("player_entry")
+    else:
+        player_team, enemy_team, player_entry = build_match_rosters(session_state["player_name"])
+    if game_mode == "Free for all":
+        combined = player_team + enemy_team
+        player_team = combined
+        enemy_team = []
+    session_state["teams"] = {"player_team": player_team, "enemy_team": enemy_team}
+    session_state["player_entry"] = player_entry
+    session_state["team_kills"] = {"player": 0, "enemy": 0}
+    session_state["team_scores"] = {"player": 0.0, "enemy": 0.0}
+    session_state["game_mode"] = game_mode
+    if game_mode == "Domination":
+        session_state["control_points"] = [
+            {"name": "A", "owner": None, "owner_name": None},
+            {"name": "B", "owner": None, "owner_name": None},
+            {"name": "C", "owner": None, "owner_name": None},
+        ]
+        session_state["last_point_tick"] = time.monotonic()
+        session_state["next_capture_time"] = time.monotonic() + random.randint(3, 7)
+    else:
+        session_state["control_points"] = []
     session_state["options"] = loaded_profile["player"].get("options", {})
-    session_state["streak_rewards"] = {"uap": None, "airstrike": None, "helicopter": None, "nuke": None}
+    session_state["streak_rewards"] = {"UAV": None, "airstrike": None, "helicopter": None, "nuke": None}
     session_state["reward_flags"] = set()
     session_state["xp_bonus"] = 0
-    session_state["uap_bonus_until"] = 0.0
+    session_state["UAV_bonus_until"] = 0.0
     session_state["nuke_until"] = 0.0
     session_state["end_match"] = None
     session_state["schedule_end"] = None
@@ -977,7 +1504,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
         "kills": {},
         "deaths": {},
         "headshots": {},
-        "uap": {},
+        "UAV": {},
         "airstrike": {},
         "helicopter": {},
         "nuke": {},
@@ -987,7 +1514,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
         "kills": 0,
         "deaths": 0,
         "headshots": 0,
-        "uap": 0,
+        "UAV": 0,
         "airstrike": 0,
         "helicopter": 0,
         "nuke": 0,
@@ -1009,19 +1536,70 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
     def end_match():
         close_nuke_prompt(session_state)
         session_state["pending_nuke"] = False
+        summary = {
+            "mode": defaults.get("game_mode", "Team death match"),
+            "map": map_name,
+            "weapon": session_state.get("weapon_name", WEAPON_POOL[0]),
+            "kills": session_state["kills"],
+            "deaths": session_state["deaths"],
+            "headshots": session_state.get("headshots", 0),
+            "longest_streak": session_state["longest_streak"],
+            "xp_bonus": session_state.get("xp_bonus", 0),
+        }
+        summary["team_scores"] = {
+            "player": int(session_state.get("team_scores", {}).get("player", 0)),
+            "enemy": int(session_state.get("team_scores", {}).get("enemy", 0)),
+        }
+        teams = session_state.get("teams", {})
+        summary["scoreboard"] = {
+            "player_team": [
+                {"name": entry.get("name"), "kills": entry.get("kills", 0), "deaths": entry.get("deaths", 0)}
+                for entry in teams.get("player_team", [])
+            ],
+            "enemy_team": [
+                {"name": entry.get("name"), "kills": entry.get("kills", 0), "deaths": entry.get("deaths", 0)}
+                for entry in teams.get("enemy_team", [])
+            ],
+        }
+        if game_mode == "Free for all":
+            player_entry = session_state.get("player_entry")
+            all_players = summary["scoreboard"]["player_team"]
+            best_entry = max(all_players, key=lambda entry: entry.get("kills", 0), default=None)
+            best_kills = best_entry.get("kills", 0) if best_entry else 0
+            player_kills = player_entry.get("kills", 0) if player_entry else 0
+            summary["team_scores"] = {"player": best_kills, "enemy": 0}
+            summary["scoreboard"]["enemy_team"] = []
+            summary["result"] = "Win" if player_kills >= best_kills else "Loss"
+            summary["winner_name"] = best_entry.get("name") if best_entry else "Unknown"
+        else:
+            summary["result"] = (
+                "Win" if summary["team_scores"].get("player", 0) >= summary["team_scores"].get("enemy", 0) else "Loss"
+            )
+        xp_gain = compute_xp_gain(
+            session_state["kills"],
+            session_state.get("headshots", 0),
+            True,
+        )
+        summary["xp_gain"] = xp_gain
+        summary["xp_total"] = xp_gain + summary["xp_bonus"]
         add_kill_death_stats(
             loaded_profile,
             session_state["kills"],
             session_state["deaths"],
             session_state.get("headshots", 0),
         )
+        match_stats = ensure_stats(loaded_profile)
+        if summary["result"] == "Win":
+            match_stats["wins"] = int(match_stats.get("wins", 0)) + 1
+            mode_wins = match_stats.setdefault("game_mode_wins", {})
+            mode_wins[game_mode] = int(mode_wins.get(game_mode, 0)) + 1
+        else:
+            match_stats["losses"] = int(match_stats.get("losses", 0)) + 1
+            mode_losses = match_stats.setdefault("game_mode_losses", {})
+            mode_losses[game_mode] = int(mode_losses.get(game_mode, 0)) + 1
         award_xp(
             loaded_profile,
-            compute_xp_gain(
-                session_state["kills"],
-                session_state.get("headshots", 0),
-                True,
-            ),
+            xp_gain,
         )
         award_weapon_xp(
             loaded_profile,
@@ -1033,6 +1611,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             )
             + session_state.get("headshots", 0) * 5,
             session_state.get("headshots", 0),
+            session_state.get("kills", 0),
         )
         award_xp(loaded_profile, session_state.get("xp_bonus", 0))
         award_weapon_xp(
@@ -1044,7 +1623,14 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
         if bonus:
             award_xp(loaded_profile, bonus)
         loaded_profile["player"]["stats"].update({"longest_kill_streak": session_state["longest_streak"]})
+        stats = ensure_stats(loaded_profile)
+        history = stats.setdefault("match_history", [])
+        history.insert(0, summary)
+        del history[10:]
         save_profile_data(loaded_profile, save_path)
+        refresh = session_state.get("ribbon_refresh_callback")
+        if refresh:
+            refresh()
         start_lobby_wait(
             root,
             session_state,
@@ -1056,6 +1642,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             loaded_profile,
             save_path,
         )
+        open_match_summary(root, summary, session_state)
 
     def schedule_end(delay_ms):
         if session_state.get("after_id"):
@@ -1076,6 +1663,33 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             timer_var.set("Nuclear Victory")
             session_state["ticker_id"] = root.after(1000, tick)
             return
+
+        player_team = session_state.get("teams", {}).get("player_team", [])
+        enemy_team = session_state.get("teams", {}).get("enemy_team", [])
+        if game_mode == "Free for all":
+            for bot in player_team:
+                if bot.get("is_player"):
+                    continue
+                if random.random() < AI_KILL_RATE * bot.get("skill", 1.0):
+                    targets = [entry for entry in player_team if entry is not bot]
+                    if not targets:
+                        continue
+                    victim = random.choice(targets)
+                    bot["kills"] += 1
+                    victim["deaths"] += 1
+        else:
+            for teammate in player_team[1:]:
+                if random.random() < AI_KILL_RATE * teammate.get("skill", 1.0):
+                    teammate["kills"] += 1
+                    if enemy_team:
+                        random.choice(enemy_team)["deaths"] += 1
+                    session_state["team_kills"]["player"] += 1
+            for enemy in enemy_team:
+                if random.random() < AI_KILL_RATE * enemy.get("skill", 1.0):
+                    enemy["kills"] += 1
+                    if player_team[1:]:
+                        random.choice(player_team[1:])["deaths"] += 1
+                    session_state["team_kills"]["enemy"] += 1
 
         if now < session_state.get("respawn_until", 0):
             kd_var.set(
@@ -1099,6 +1713,47 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             xp_var.set(f"{rank} | Level {level} | XP {xp_into}/{xp_needed}")
             session_state["ticker_id"] = root.after(1000, tick)
             return
+
+        team_kills = session_state.get("team_kills", {})
+        if (
+            game_mode == "Team death match"
+            and max(team_kills.get("player", 0), team_kills.get("enemy", 0)) >= TEAM_DEATHMATCH_KILL_CAP
+        ):
+            schedule_end(0)
+            return
+        if game_mode == "Free for all":
+            roster = session_state.get("teams", {}).get("player_team", [])
+            best_kills = max((entry.get("kills", 0) for entry in roster), default=0)
+            if best_kills >= FREE_FOR_ALL_KILL_CAP:
+                schedule_end(0)
+                return
+        if game_mode == "Domination":
+            control_points = session_state.get("control_points", [])
+            next_capture = session_state.get("next_capture_time", now)
+            if now >= next_capture:
+                point = random.choice(control_points)
+                team_choice = random.choice(["player", "enemy"])
+                roster = session_state.get("teams", {}).get(
+                    "player_team" if team_choice == "player" else "enemy_team",
+                    [],
+                )
+                owner = random.choice(roster)["name"] if roster else "Unknown"
+                point["owner"] = team_choice
+                point["owner_name"] = owner
+                session_state["next_capture_time"] = now + random.randint(3, 7)
+
+            last_tick = session_state.get("last_point_tick", now)
+            delta = max(0.0, now - last_tick)
+            player_control = sum(1 for point in control_points if point.get("owner") == "player")
+            enemy_control = sum(1 for point in control_points if point.get("owner") == "enemy")
+            player_score = session_state["team_scores"]["player"] + delta * player_control
+            enemy_score = session_state["team_scores"]["enemy"] + delta * enemy_control
+            session_state["team_scores"]["player"] = max(session_state["team_scores"]["player"], player_score)
+            session_state["team_scores"]["enemy"] = max(session_state["team_scores"]["enemy"], enemy_score)
+            session_state["last_point_tick"] = now
+            if max(session_state["team_scores"]["player"], session_state["team_scores"]["enemy"]) >= DOMINATION_SCORE_CAP:
+                schedule_end(0)
+                return
         kills_rate, deaths_rate = calculate_rates(attributes)
         effects = compute_attribute_effects(attributes, session_state.get("options"))
         kills_rate *= effects["accuracy"]
@@ -1116,6 +1771,17 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             session_state["kills"] += kill_count
             session_state["totals"]["kills"] += kill_count
             session_state["current_streak"] += kill_count
+            session_state["team_kills"]["player"] += kill_count
+            if session_state.get("player_entry"):
+                session_state["player_entry"]["kills"] += kill_count
+            if game_mode == "Free for all":
+                roster = session_state.get("teams", {}).get("player_team", [])
+                targets = [entry for entry in roster if not entry.get("is_player")]
+            else:
+                targets = session_state.get("teams", {}).get("enemy_team", [])
+            for _ in range(kill_count):
+                if targets:
+                    random.choice(targets)["deaths"] += 1
             if session_state["current_streak"] > session_state["longest_streak"]:
                 session_state["longest_streak"] = session_state["current_streak"]
             session_state["last_kill_time"] = now
@@ -1154,7 +1820,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
                 minute = int((now - session_state["match_start"]) // 60)
                 session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + bonus
                 session_state["totals"]["score"] += bonus
-            if now < session_state.get("uap_bonus_until", 0):
+            if now < session_state.get("UAV_bonus_until", 0):
                 session_state["xp_bonus"] += kill_count * 5
                 minute = int((now - session_state["match_start"]) // 60)
                 bonus = kill_count * 5
@@ -1162,20 +1828,31 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
                 session_state["totals"]["score"] += bonus
             session_state["encounter_enemies"] = random.choices(ENEMY_POOL, k=random.randint(1, 6))
             session_state["encounter_last_update"] = now
-            if session_state["current_streak"] >= 3 and "uap" not in session_state["reward_flags"]:
-                session_state["streak_rewards"]["uap"] = now
-                session_state["reward_flags"].add("uap")
-                session_state["uap_bonus_until"] = now + 12
-                stats["uap_calls"] = int(stats.get("uap_calls", 0)) + 1
-                session_state["totals"]["uap"] += 1
+            if session_state["current_streak"] >= 3 and "UAV" not in session_state["reward_flags"]:
+                session_state["streak_rewards"]["UAV"] = now
+                session_state["reward_flags"].add("UAV")
+                session_state["UAV_bonus_until"] = now + 12
+                stats["UAV_calls"] = int(stats.get("UAV_calls", 0)) + 1
+                session_state["totals"]["UAV"] += 1
                 minute = int((now - session_state["match_start"]) // 60)
-                session_state["timeline"]["uap"][minute] = session_state["timeline"]["uap"].get(minute, 0) + 1
+                session_state["timeline"]["UAV"][minute] = session_state["timeline"]["UAV"].get(minute, 0) + 1
             if session_state["current_streak"] >= 5 and "airstrike" not in session_state["reward_flags"]:
                 session_state["streak_rewards"]["airstrike"] = now
                 session_state["reward_flags"].add("airstrike")
                 air_kills = random.randint(0, 6)
                 session_state["kills"] += air_kills
                 session_state["totals"]["kills"] += air_kills
+                session_state["team_kills"]["player"] += air_kills
+                if session_state.get("player_entry"):
+                    session_state["player_entry"]["kills"] += air_kills
+                if game_mode == "Free for all":
+                    roster = session_state.get("teams", {}).get("player_team", [])
+                    targets = [entry for entry in roster if not entry.get("is_player")]
+                else:
+                    targets = session_state.get("teams", {}).get("enemy_team", [])
+                for _ in range(air_kills):
+                    if targets:
+                        random.choice(targets)["deaths"] += 1
                 bonus = air_kills * 10
                 session_state["xp_bonus"] += bonus
                 minute = int((now - session_state["match_start"]) // 60)
@@ -1194,6 +1871,17 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
                 extra_kills = random.randint(0, 22)
                 session_state["kills"] += extra_kills
                 session_state["totals"]["kills"] += extra_kills
+                session_state["team_kills"]["player"] += extra_kills
+                if session_state.get("player_entry"):
+                    session_state["player_entry"]["kills"] += extra_kills
+                if game_mode == "Free for all":
+                    roster = session_state.get("teams", {}).get("player_team", [])
+                    targets = [entry for entry in roster if not entry.get("is_player")]
+                else:
+                    targets = session_state.get("teams", {}).get("enemy_team", [])
+                for _ in range(extra_kills):
+                    if targets:
+                        random.choice(targets)["deaths"] += 1
                 bonus = extra_kills * 10
                 session_state["xp_bonus"] += bonus
                 minute = int((now - session_state["match_start"]) // 60)
@@ -1226,19 +1914,39 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             session_state["deaths"] += 1
             session_state["totals"]["deaths"] += 1
             session_state["deaths_in_minute"] += 1
+            session_state["team_kills"]["enemy"] += 1
+            if session_state.get("player_entry"):
+                session_state["player_entry"]["deaths"] += 1
+            enemy_team = session_state.get("teams", {}).get("enemy_team", [])
+            if enemy_team:
+                random.choice(enemy_team)["kills"] += 1
             session_state["current_streak"] = 0
             session_state["respawn_until"] = now + effects["respawn_seconds"]
             session_state["reward_flags"].clear()
-            session_state["uap_bonus_until"] = 0.0
+            session_state["UAV_bonus_until"] = 0.0
             minute = int((now - session_state["match_start"]) // 60)
             session_state["timeline"]["deaths"][minute] = session_state["timeline"]["deaths"].get(minute, 0) + 1
 
+        if game_mode == "Team death match":
+            session_state["team_scores"]["player"] = session_state["team_kills"]["player"]
+            session_state["team_scores"]["enemy"] = session_state["team_kills"]["enemy"]
+        elif game_mode == "Free for all":
+            roster = session_state.get("teams", {}).get("player_team", [])
+            best_kills = max((entry.get("kills", 0) for entry in roster), default=0)
+            player_entry = session_state.get("player_entry")
+            player_kills = player_entry.get("kills", 0) if player_entry else 0
+            session_state["team_scores"]["player"] = player_kills
+            session_state["team_scores"]["enemy"] = best_kills
+        team_scores = session_state.get("team_scores", {})
         kd_var.set(
-            "Kills: {kills} | Deaths: {deaths} | Streak: {streak} | Longest: {longest}".format(
+            "Kills: {kills} | Deaths: {deaths} | Streak: {streak} | Longest: {longest} | "
+            "Team {team} - {enemy}".format(
                 kills=session_state["kills"],
                 deaths=session_state["deaths"],
                 streak=session_state["current_streak"],
                 longest=session_state["longest_streak"],
+                team=int(team_scores.get("player", 0)),
+                enemy=int(team_scores.get("enemy", 0)),
             )
         )
         minute = int((now - session_state["match_start"]) // 60)
@@ -1282,23 +1990,25 @@ def on_options(root, loaded_profile, save_path, session_state):
 
     window = tk.Toplevel(root)
     window.title("Options")
-    window.resizable(False, False)
+    window.resizable(True, True)
 
-    header = tk.Label(window, text="Attribute Effects (Overrides)", font=("Segoe UI", 11))
+    header = tk.Label(window, text="Attribute Effects (Overrides)", font=("Segoe UI", 11), bg=THEME["bg"], fg=THEME["text"])
     header.pack(padx=24, pady=(18, 6))
 
-    hint = tk.Label(window, text="Adjust values to override the attribute defaults.", font=("Segoe UI", 9))
+    hint = tk.Label(window, text="Adjust values to override the attribute defaults.", font=("Segoe UI", 9), bg=THEME["bg"], fg=THEME["muted"])
     hint.pack(padx=24, pady=(0, 10))
 
     accuracy_var = tk.DoubleVar(value=options.get("accuracy", base_effects["accuracy"]) * 100)
     move_var = tk.DoubleVar(value=options.get("movement_speed", base_effects["movement_speed"]))
     respawn_var = tk.DoubleVar(value=options.get("respawn_seconds", base_effects["respawn_seconds"]))
     headshot_var = tk.DoubleVar(value=options.get("headshot_rate", base_effects["headshot_rate"]) * 100)
+    offline_var = tk.BooleanVar(value=bool(options.get("offline_progression", False)))
+    offline_confirmed = {"accepted": offline_var.get()}
 
     def add_slider(label_text, var, from_, to, resolution, unit):
-        row = tk.Frame(window)
+        row = tk.Frame(window, bg=THEME["bg"])
         row.pack(fill="x", padx=24, pady=4)
-        label = tk.Label(row, text=label_text, width=16, anchor="w")
+        label = tk.Label(row, text=label_text, width=16, anchor="w", bg=THEME["bg"], fg=THEME["text"])
         label.pack(side="left")
         scale = tk.Scale(
             row,
@@ -1310,6 +2020,7 @@ def on_options(root, loaded_profile, save_path, session_state):
             showvalue=True,
             variable=var,
         )
+        scale.configure(bg=THEME["bg"], fg=THEME["text"], highlightthickness=0, troughcolor=THEME["panel"])
         scale.pack(side="right")
         if unit:
             scale.configure(label=unit)
@@ -1319,66 +2030,204 @@ def on_options(root, loaded_profile, save_path, session_state):
     add_slider("Respawn", respawn_var, 1.5, 4.0, 0.1, "s")
     add_slider("Headshot %", headshot_var, 5, 40, 1, None)
 
+    def on_offline_toggle():
+        if offline_var.get() and not offline_confirmed["accepted"]:
+            accepted = messagebox.askyesno(
+                "Offline Progression",
+                "Offline progression can make achievements and level progression fall out of sync.\n"
+                "Do you want to enable it?",
+            )
+            if not accepted:
+                offline_var.set(False)
+            else:
+                offline_confirmed["accepted"] = True
+
     def on_save():
         loaded_profile["player"]["options"] = {
             "accuracy": accuracy_var.get() / 100.0,
             "movement_speed": move_var.get(),
             "respawn_seconds": respawn_var.get(),
             "headshot_rate": headshot_var.get() / 100.0,
+            "offline_progression": offline_var.get(),
         }
         session_state["options"] = loaded_profile["player"]["options"]
         save_profile_data(loaded_profile, save_path)
         window.destroy()
 
+    offline_row = tk.Frame(window, bg=THEME["bg"])
+    offline_row.pack(fill="x", padx=24, pady=(8, 0))
+    offline_toggle = tk.Checkbutton(
+        offline_row,
+        text="Enable offline progression",
+        variable=offline_var,
+        command=on_offline_toggle,
+        bg=THEME["bg"],
+        fg=THEME["text"],
+        selectcolor=THEME["panel"],
+        activebackground=THEME["bg"],
+        activeforeground=THEME["text"],
+    )
+    offline_toggle.pack(side="left")
+
+    debug_header = tk.Label(window, text="Debug Controls", font=("Segoe UI", 10), bg=THEME["bg"], fg=THEME["accent"])
+    debug_header.pack(padx=24, pady=(14, 6))
+
+    def on_end_match():
+        if session_state.get("phase") != "playing":
+            messagebox.showinfo("Debug", "No active match to end.")
+            return
+        end_match = session_state.get("end_match")
+        if not end_match:
+            messagebox.showinfo("Debug", "Match end handler is not available yet.")
+            return
+        end_match()
+        window.destroy()
+
+    end_match_button = tk.Button(window, text="End Current Match", width=20, command=on_end_match)
+    end_match_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
+    end_match_button.pack(padx=24, pady=(0, 10))
+
+    save_button = tk.Button(window, text="Save Options", width=18, command=on_save)
+    save_button.configure(bg=THEME["primary"], fg="#f5f7fb", activebackground=THEME["primary_hover"])
+    save_button.pack(padx=24, pady=(12, 18))
+
     window.protocol("WM_DELETE_WINDOW", window.destroy)
 
 
-def open_stats_window(root, session_state):
-    # Show simple graphs for the current match timeline.
-    if not session_state or session_state.get("phase") != "playing":
-        messagebox.showinfo("Stats", "Start a match to view live stats.")
+
+def open_match_summary(root, summary, session_state):
+    # Show match summaries in a persistent tabbed window (max 10 tabs).
+    window = session_state.get("summary_window")
+    if window is None or not window.winfo_exists():
+        window = tk.Toplevel(root)
+        window.title("Match Summaries")
+        window.resizable(True, True)
+        notebook = ttk.Notebook(window)
+        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+        session_state["summary_window"] = window
+        session_state["summary_notebook"] = notebook
+        session_state["summary_tabs"] = []
+
+        def on_close():
+            window.destroy()
+            session_state["summary_window"] = None
+            session_state["summary_notebook"] = None
+            session_state["summary_tabs"] = []
+
+        window.protocol("WM_DELETE_WINDOW", on_close)
+    else:
+        notebook = session_state.get("summary_notebook")
+
+    tabs = session_state.get("summary_tabs", [])
+    if len(tabs) >= 10:
+        oldest = tabs.pop(0)
+        notebook.forget(oldest)
+        oldest.destroy()
+
+    frame = tk.Frame(notebook)
+    tab_title = f"{summary.get('mode', 'Match')} {len(tabs) + 1}"
+    notebook.add(frame, text=tab_title)
+    tabs.append(frame)
+    session_state["summary_tabs"] = tabs
+
+    header = tk.Label(frame, text="Match Complete", font=("Segoe UI", 12))
+    header.pack(pady=(12, 10))
+
+    rows = [
+        ("Mode", summary["mode"]),
+        ("Map", summary["map"]),
+        ("Weapon", summary["weapon"]),
+        ("Result", summary.get("result", "Win")),
+        ("Winner", summary.get("winner_name", "N/A")),
+        ("Kills", summary["kills"]),
+        ("Deaths", summary["deaths"]),
+        ("Headshots", summary["headshots"]),
+        ("XP Gained", summary["xp_gain"]),
+        ("Bonus XP", summary["xp_bonus"]),
+        ("Total XP", summary["xp_total"]),
+        ("Longest Streak", summary["longest_streak"]),
+    ]
+
+    for label_text, value_text in rows:
+        row = tk.Frame(frame)
+        row.pack(fill="x", pady=2, padx=12)
+        label = tk.Label(row, text=f"{label_text}:", width=14, anchor="w")
+        label.pack(side="left")
+        value = tk.Label(row, text=str(value_text), anchor="w")
+        value.pack(side="left")
+
+    team_scores = summary.get("team_scores", {"player": 0, "enemy": 0})
+    score_label = "Points" if summary.get("mode") == "Domination" else "Kills"
+    scoreboard = summary.get("scoreboard", {})
+    player_team = scoreboard.get("player_team", [])
+    enemy_team = scoreboard.get("enemy_team", [])
+    if player_team or enemy_team:
+        divider = tk.Label(frame, text="Team Rankings", font=("Segoe UI", 10))
+        divider.pack(pady=(10, 6))
+
+        def sorted_team(team):
+            return sorted(team, key=lambda entry: (-entry.get("kills", 0), entry.get("deaths", 0)))
+
+        team_a = tk.Label(
+            frame,
+            text=f"Your Team ({team_scores.get('player', 0)} {score_label})",
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        )
+        team_a.pack(fill="x", padx=12)
+        for entry in sorted_team(player_team):
+            line = f"{entry.get('name')} - K {entry.get('kills', 0)} D {entry.get('deaths', 0)}"
+            tk.Label(frame, text=line, font=("Segoe UI", 9), anchor="w").pack(fill="x", padx=12)
+
+        if enemy_team:
+            team_b = tk.Label(
+                frame,
+                text=f"Enemy Team ({team_scores.get('enemy', 0)} {score_label})",
+                font=("Segoe UI", 9, "bold"),
+                anchor="w",
+            )
+            team_b.pack(fill="x", pady=(6, 0), padx=12)
+            for entry in sorted_team(enemy_team):
+                line = f"{entry.get('name')} - K {entry.get('kills', 0)} D {entry.get('deaths', 0)}"
+                tk.Label(frame, text=line, font=("Segoe UI", 9), anchor="w").pack(fill="x", padx=12)
+
+    notebook.select(frame)
+
+
+def open_match_history(root, loaded_profile):
+    # Show the last 10 match summaries.
+    if not loaded_profile:
+        messagebox.showinfo("Match History", "Load a player profile to view match history.")
         return
 
+    stats = ensure_stats(loaded_profile)
+    history = stats.get("match_history", [])
+
     window = tk.Toplevel(root)
-    window.title("Match Stats")
-    window.resizable(False, False)
+    window.title("Match History")
+    window.resizable(True, True)
 
-    canvas = tk.Canvas(window, width=420, height=260, bg="#101820", highlightthickness=0)
-    canvas.pack(padx=16, pady=16)
+    frame = tk.Frame(window)
+    frame.pack(padx=16, pady=16, fill="both", expand=True)
 
-    def draw_series(series, color, origin_x, origin_y, width, height, label):
-        max_minute = max(series.keys(), default=0)
-        max_value = max(series.values(), default=1)
-        bars = max_minute + 1
-        bar_width = max(4, width // max(1, bars))
-        canvas.create_text(origin_x, origin_y - 10, text=label, fill="#c9d4e2", anchor="w")
-        for minute in range(bars):
-            value = series.get(minute, 0)
-            bar_height = 0 if max_value == 0 else int((value / max_value) * height)
-            x0 = origin_x + minute * bar_width
-            y0 = origin_y + height - bar_height
-            x1 = x0 + bar_width - 2
-            y1 = origin_y + height
-            canvas.create_rectangle(x0, y0, x1, y1, fill=color, outline="")
+    header = tk.Label(frame, text="Last 10 Matches", font=("Segoe UI", 12))
+    header.pack(pady=(0, 10))
 
-    kills_series = session_state.get("timeline", {}).get("kills", {})
-    deaths_series = session_state.get("timeline", {}).get("deaths", {})
-    headshots_series = session_state.get("timeline", {}).get("headshots", {})
-    score_series = session_state.get("timeline", {}).get("score", {})
+    if not history:
+        empty = tk.Label(frame, text="No matches recorded yet.", font=("Segoe UI", 10))
+        empty.pack()
+        return
 
-    draw_series(kills_series, "#6bd98a", 20, 30, 180, 80, "Kills per minute")
-    draw_series(deaths_series, "#f07070", 220, 30, 180, 80, "Deaths per minute")
-    draw_series(headshots_series, "#7fc7ff", 20, 140, 180, 80, "Headshots per minute")
-    draw_series(score_series, "#f4c542", 220, 140, 180, 80, "Score per minute")
-
-    totals = session_state.get("totals", {})
-    summary = (
-        f"Kills: {totals.get('kills', 0)} | Deaths: {totals.get('deaths', 0)} | "
-        f"Headshots: {totals.get('headshots', 0)} | UAP: {totals.get('uap', 0)} | "
-        f"Airstrike: {totals.get('airstrike', 0)} | Helicopter: {totals.get('helicopter', 0)} | "
-        f"Nuke: {totals.get('nuke', 0)} | Score: {totals.get('score', 0)}"
-    )
-    canvas.create_text(20, 235, text=summary, fill="#c9d4e2", anchor="w", font=("Segoe UI", 9))
+    for entry in history[:10]:
+        row = tk.Frame(frame)
+        row.pack(fill="x", pady=2)
+        text = (
+            f"{entry.get('mode', 'TDM')} | {entry.get('map', 'Unknown')} | "
+            f"K {entry.get('kills', 0)} D {entry.get('deaths', 0)} HS {entry.get('headshots', 0)} | "
+            f"XP {entry.get('xp_total', 0)}"
+        )
+        label = tk.Label(row, text=text, anchor="w", font=("Segoe UI", 9))
+        label.pack(side="left")
 
 
 def open_achievements_window(root, loaded_profile):
@@ -1392,7 +2241,8 @@ def open_achievements_window(root, loaded_profile):
 
     window = tk.Toplevel(root)
     window.title("Achievements")
-    window.resizable(False, False)
+    window.resizable(True, True)
+    window.configure(bg=THEME["bg"])
 
     tooltip = {"window": None, "label": None}
 
@@ -1416,44 +2266,98 @@ def open_achievements_window(root, loaded_profile):
             tooltip["window"] = None
             tooltip["label"] = None
 
-    frame = tk.Frame(window)
-    frame.pack(padx=16, pady=16)
+    header = tk.Label(window, text="Achievement Board", font=("Segoe UI", 11, "bold"), bg=THEME["bg"], fg=THEME["text"])
+    header.pack(padx=16, pady=(16, 6))
 
-    for ach_id, name, key, threshold, reward_xp, description in ACHIEVEMENTS:
-        value = achievement_value(loaded_profile, key)
-        done = bool(earned.get(ach_id))
-        display_value = min(value, threshold)
-        ratio = 1.0 if threshold == 0 else min(1.0, display_value / threshold)
+    filter_row = tk.Frame(window, bg=THEME["bg"])
+    filter_row.pack(padx=16, pady=(0, 10), fill="x")
+    weapon_only_var = tk.BooleanVar(value=False)
 
-        title = tk.Label(
-            frame,
-            text=f"{name} (+{reward_xp} XP)",
-            font=("Segoe UI", 10),
-            fg="#f4c542" if done else "#7a7a7a",
-            anchor="w",
-        )
-        title.pack(fill="x")
-        title.bind("<Enter>", lambda e, text=description: show_tooltip(e.widget, text))
-        title.bind("<Leave>", hide_tooltip)
+    filter_label = tk.Label(filter_row, text="Filter:", font=("Segoe UI", 9), bg=THEME["bg"], fg=THEME["muted"])
+    filter_label.pack(side="left")
 
-        progress = tk.Canvas(frame, width=260, height=8, highlightthickness=0, bg="#1b2230")
-        progress.pack(pady=(2, 8))
-        fill_width = int(260 * ratio)
-        color = "#6bd98a" if done else "#4a6a84"
-        progress.create_rectangle(0, 0, fill_width, 8, fill=color, outline="")
-        progress.create_text(
-            130,
-            4,
-            text=f"{display_value}/{threshold}",
-            fill="#c9d4e2",
-            font=("Segoe UI", 8),
-        )
+    weapon_toggle = tk.Checkbutton(
+        filter_row,
+        text="Weapon achievements only",
+        variable=weapon_only_var,
+        bg=THEME["bg"],
+        fg=THEME["text"],
+        selectcolor=THEME["panel"],
+        activebackground=THEME["bg"],
+        activeforeground=THEME["text"],
+        command=lambda: draw_achievements(),
+    )
+    weapon_toggle.pack(side="left", padx=8)
+
+    frame = tk.Frame(window, bg=THEME["bg"])
+    frame.pack(padx=16, pady=(0, 16), fill="both", expand=True)
+
+    def is_weapon_entry(entry):
+        return entry[2].startswith("weapon_kills:")
+
+    def draw_achievements():
+        for widget in frame.winfo_children():
+            widget.destroy()
+
+        grouped = {}
+        for entry in ACHIEVEMENTS:
+            if weapon_only_var.get() and not is_weapon_entry(entry):
+                continue
+            base_id, level = achievement_base_and_level(entry[0])
+            grouped.setdefault(base_id, []).append((level, entry))
+
+        if not grouped:
+            empty = tk.Label(frame, text="No achievements to display.", font=("Segoe UI", 9), bg=THEME["bg"], fg=THEME["muted"])
+            empty.pack()
+            return
+
+        for base_id, levels in grouped.items():
+            levels.sort(key=lambda item: item[0])
+            current = levels[-1][1]
+            for _, entry in levels:
+                if not earned.get(entry[0]):
+                    current = entry
+                    break
+            ach_id, name, key, threshold, reward_xp, description = current
+            value = achievement_value(loaded_profile, key)
+            done = bool(earned.get(ach_id))
+            display_value = min(value, threshold)
+            ratio = 1.0 if threshold == 0 else min(1.0, display_value / threshold)
+
+            title = tk.Label(
+                frame,
+                text=f"{name} (+{reward_xp} XP)",
+                font=("Segoe UI", 10),
+                fg="#f4c542" if done else "#7a7a7a",
+                bg=THEME["bg"],
+                anchor="w",
+            )
+            title.pack(fill="x")
+            title.bind("<Enter>", lambda e, text=description: show_tooltip(e.widget, text))
+            title.bind("<Leave>", hide_tooltip)
+
+            progress = tk.Canvas(frame, width=260, height=8, highlightthickness=0, bg="#1b2230")
+            progress.pack(pady=(2, 8))
+            fill_width = int(260 * ratio)
+            color = "#6bd98a" if done else "#4a6a84"
+            progress.create_rectangle(0, 0, fill_width, 8, fill=color, outline="")
+            progress.create_text(
+                130,
+                4,
+                text=f"{display_value}/{threshold}",
+                fill="#c9d4e2",
+                font=("Segoe UI", 8),
+            )
+
+    draw_achievements()
 
 def open_profile_window(root):
     # Profile creation dialog for attribute distribution and gamertag entry.
     window = tk.Toplevel(root)
     window.title("Player Profile")
-    window.resizable(False, False)
+    window.resizable(True, True)
+    window.configure(bg=THEME["bg"])
+    window.configure(bg=THEME["bg"])
 
     header = tk.Label(
         window,
@@ -1557,21 +2461,26 @@ def open_profile_window(root):
             "play_time_seconds": 0,
             "last_saved": int(time.time()),
             "stats": {
-                "games_played": 0,
-                "game_modes_played": {},
-                "maps_played": {},
-                "kills": 0,
-                "deaths": 0,
-                "longest_kill_streak": 0,
-                "headshots": 0,
-                "xp": 0,
+            "games_played": 0,
+            "game_modes_played": {},
+            "game_mode_wins": {},
+            "game_mode_losses": {},
+            "maps_played": {},
+            "kills": 0,
+            "deaths": 0,
+            "wins": 0,
+            "losses": 0,
+            "longest_kill_streak": 0,
+            "headshots": 0,
+            "xp": 0,
+            "lifetime_xp": 0,
                 "level": 1,
                 "prestige_unlocked": False,
                 "prestige": 0,
                 "master_prestige": False,
                 "master_level": 1,
                 "weapons": {},
-                "uap_calls": 0,
+                "UAV_calls": 0,
                 "airstrike_calls": 0,
                 "helicopter_calls": 0,
                 "airstrike_kills": 0,
@@ -1583,6 +2492,7 @@ def open_profile_window(root):
                 "monster_kills": 0,
                 "team_kills": 0,
                 "achievements": {},
+                "match_history": [],
             },
         }
         save_player_profile(profile)
@@ -1612,7 +2522,8 @@ def load_player_profile(root, playing_as_var):
 
     last_saved = int(data["player"].get("last_saved", time.time()))
     offline_seconds = int(time.time()) - last_saved
-    if offline_seconds >= 60:
+    offline_enabled = bool(data["player"].get("options", {}).get("offline_progression", False))
+    if offline_enabled and offline_seconds >= 60:
         apply_offline_progress(data, offline_seconds)
         save_profile_data(data, path)
 
@@ -1635,7 +2546,7 @@ def view_player_profile(root, loaded_profile, timer_state):
     kd_ratio = kills if deaths == 0 else kills / deaths
     longest_streak = int(stats.get("longest_kill_streak", 0))
     headshots = int(stats.get("headshots", 0))
-    xp_total = int(stats.get("xp", 0))
+    xp_total = int(stats.get("lifetime_xp", stats.get("xp", 0)))
     progress = progress_state(stats)
     level = progress["level"]
     xp_into = progress["xp_into"]
@@ -1644,7 +2555,7 @@ def view_player_profile(root, loaded_profile, timer_state):
 
     window = tk.Toplevel(root)
     window.title("Player Profile")
-    window.resizable(False, False)
+    window.resizable(True, True)
     diamond_swatches = []
     diamond_after_id = {"id": None, "index": 0}
 
@@ -1677,20 +2588,33 @@ def view_player_profile(root, loaded_profile, timer_state):
     total_xp_label = tk.Label(window, text=f"Total XP: {xp_total}", font=("Segoe UI", 10))
     total_xp_label.pack(padx=24, pady=(0, 8))
 
+    wins = int(stats.get("wins", 0))
+    losses = int(stats.get("losses", 0))
     kd_label = tk.Label(
         window,
         text=f"Kills: {kills} | Deaths: {deaths} | K/D Ratio: {kd_ratio:.2f}",
         font=("Segoe UI", 10),
     )
-    kd_label.pack(padx=24, pady=(0, 8))
+    kd_label.pack(padx=24, pady=(0, 6))
 
-    streak_label = tk.Label(window, text=f"Longest Kill Streak: {longest_streak}", font=("Segoe UI", 10))
+    wl_label = tk.Label(
+        window,
+        text=f"Wins: {wins} | Losses: {losses}",
+        font=("Segoe UI", 10),
+    )
+    wl_label.pack(padx=24, pady=(0, 8))
+
+    streak_label = tk.Label(
+        window,
+        text=f"Longest Kill Streak: {longest_streak}",
+        font=("Segoe UI", 10),
+    )
     streak_label.pack(padx=24, pady=(0, 8))
 
     headshot_label = tk.Label(window, text=f"Headshots: {headshots}", font=("Segoe UI", 10))
     headshot_label.pack(padx=24, pady=(0, 8))
 
-    uap_calls = int(stats.get("uap_calls", 0))
+    UAV_calls = int(stats.get("UAV_calls", 0))
     airstrike_calls = int(stats.get("airstrike_calls", 0))
     helicopter_calls = int(stats.get("helicopter_calls", 0))
     airstrike_kills = int(stats.get("airstrike_kills", 0))
@@ -1705,13 +2629,28 @@ def view_player_profile(root, loaded_profile, timer_state):
     rewards_label = tk.Label(
         window,
         text=(
-            f"UAPs: {uap_calls} | Airstrikes: {airstrike_calls} "
+            f"UAVs: {UAV_calls} | Airstrikes: {airstrike_calls} "
             f"(Kills {airstrike_kills}) | Helicopters: {helicopter_calls} "
             f"(Kills {helicopter_kills}) | Nukes: {nuke_victories}"
         ),
         font=("Segoe UI", 10),
     )
     rewards_label.pack(padx=24, pady=(0, 8))
+
+    mode_wins = stats.get("game_mode_wins", {})
+    mode_losses = stats.get("game_mode_losses", {})
+    if mode_wins or mode_losses:
+        mode_header = tk.Label(window, text="Mode Record", font=("Segoe UI", 10))
+        mode_header.pack(padx=24, pady=(4, 6))
+        for mode_name in sorted(set(mode_wins) | set(mode_losses)):
+            wins_value = int(mode_wins.get(mode_name, 0))
+            losses_value = int(mode_losses.get(mode_name, 0))
+            row = tk.Frame(window)
+            row.pack(fill="x", padx=24, pady=1)
+            label = tk.Label(row, text=mode_name, width=16, anchor="w")
+            label.pack(side="left")
+            value = tk.Label(row, text=f"W {wins_value} / L {losses_value}", anchor="e")
+            value.pack(side="right")
 
     multikill_label = tk.Label(
         window,
@@ -1798,7 +2737,7 @@ def open_game_setup_window(
 
     window = tk.Toplevel(root)
     window.title("Game Setup")
-    window.resizable(False, False)
+    window.resizable(True, True)
 
     header = tk.Label(window, text="Select default loadout and mode.", font=("Segoe UI", 11))
     header.pack(padx=24, pady=(18, 12))
@@ -1821,7 +2760,7 @@ def open_game_setup_window(
     mode_label.pack(side="left")
 
     mode_var = tk.StringVar(value=defaults.get("game_mode", "Team death match"))
-    mode_menu = tk.OptionMenu(mode_frame, mode_var, "Team death match")
+    mode_menu = tk.OptionMenu(mode_frame, mode_var, "Team death match", "Domination", "Free for all")
     mode_menu.config(width=18)
     mode_menu.pack(side="right")
 
@@ -1852,12 +2791,46 @@ def main():
     # Build the main menu window.
     root = tk.Tk()
     root.title("Idle FPS")
+    root.configure(bg=THEME["bg"])
 
-    label = tk.Label(root, text="Idle FPS version 0.0.0.1", font=("Segoe UI", 16))
-    label.pack(padx=24, pady=(24, 12))
+    title_label = tk.Label(
+        root,
+        text="Idle FPS version 0.0.0.1",
+        font=("Segoe UI", 16, "bold"),
+        bg=THEME["bg"],
+        fg=THEME["text"],
+    )
+    title_label.pack(padx=24, pady=(22, 12))
 
-    menu_frame = tk.Frame(root)
-    menu_frame.pack(padx=24, pady=(0, 24))
+    actions_frame = tk.Frame(root, bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
+    actions_frame.pack(padx=24, pady=(0, 14), fill="both", expand=True)
+    actions_header = tk.Label(
+        actions_frame,
+        text="Actions",
+        font=("Segoe UI", 10, "bold"),
+        bg=THEME["panel"],
+        fg=THEME["accent"],
+    )
+    actions_header.pack(anchor="w", padx=14, pady=(10, 6))
+
+    menu_frame = tk.Frame(actions_frame, bg=THEME["panel"])
+    menu_frame.pack(padx=14, pady=(0, 12), fill="both", expand=True)
+
+    def style_button(button, primary=False, danger=False):
+        bg = THEME["primary"] if primary else THEME["button"]
+        hover = THEME["primary_hover"] if primary else THEME["button_hover"]
+        fg = "#f5f7fb"
+        if danger:
+            bg = THEME["danger"]
+            hover = "#8a4a4a"
+        button.configure(
+            bg=bg,
+            fg=fg,
+            activebackground=hover,
+            activeforeground=fg,
+            relief="flat",
+            highlightthickness=0,
+        )
 
     playing_as_var = tk.StringVar(value="Playing as: ")
     session_status_var = tk.StringVar(value="Not in game")
@@ -1889,7 +2862,7 @@ def main():
         "kill_feed": [],
         "player_name": "Player",
         "xp_bonus": 0,
-        "uap_bonus_until": 0.0,
+        "UAV_bonus_until": 0.0,
         "nuke_until": 0.0,
         "nuke_prompt": None,
         "pending_nuke": False,
@@ -1897,6 +2870,9 @@ def main():
         "timeline": {},
         "totals": {},
     }
+    session_state["match_view_closed_callback"] = lambda: None
+    session_state["match_view_opened_callback"] = lambda: None
+    session_state["ribbon_refresh_callback"] = lambda: None
 
     def on_start_click():
         if loaded_profile["data"] and loaded_profile["path"]:
@@ -1915,6 +2891,7 @@ def main():
         on_start(root)
 
     start_button = tk.Button(menu_frame, text="Start", width=16, command=on_start_click)
+    style_button(start_button, primary=True)
     start_button.pack(pady=4)
 
     def on_load_profile():
@@ -1928,7 +2905,9 @@ def main():
             timer_state["running"] = True
             view_button.pack(pady=4)
             start_button.configure(text="Loadout Options")
-            start_game_session(
+            update_ribbon_display()
+            session_state["running"] = True
+            start_lobby_wait(
                 root,
                 session_state,
                 session_status_var,
@@ -1941,6 +2920,7 @@ def main():
             )
         elif loaded_profile["data"] is None:
             start_button.configure(text="Start")
+            update_ribbon_display()
 
     load_button = tk.Button(
         menu_frame,
@@ -1948,6 +2928,7 @@ def main():
         width=16,
         command=on_load_profile,
     )
+    style_button(load_button)
     load_button.pack(pady=4)
 
     view_button = tk.Button(
@@ -1956,6 +2937,7 @@ def main():
         width=16,
         command=lambda: view_player_profile(root, loaded_profile["data"], timer_state),
     )
+    style_button(view_button)
     view_button.pack_forget()
 
     options_button = tk.Button(
@@ -1964,15 +2946,39 @@ def main():
         width=16,
         command=lambda: on_options(root, loaded_profile["data"], loaded_profile["path"], session_state),
     )
+    style_button(options_button)
     options_button.pack(pady=4)
 
-    stats_button = tk.Button(
-        menu_frame,
-        text="Stats",
-        width=16,
-        command=lambda: open_stats_window(root, session_state),
-    )
-    stats_button.pack(pady=4)
+    def update_match_view_label():
+        if session_state.get("anim_window"):
+            match_view_button.configure(text="Hide Match View")
+        else:
+            match_view_button.configure(text="Show Match View")
+
+    def on_toggle_match_view():
+        if session_state.get("anim_window"):
+            anim_after_id = session_state.get("anim_after_id")
+            if anim_after_id:
+                root.after_cancel(anim_after_id)
+                session_state["anim_after_id"] = None
+            session_state["anim_window"].destroy()
+            session_state["anim_window"] = None
+            session_state["anim_canvas"] = None
+            session_state["anim_frame"] = 0
+            update_match_view_label()
+            return
+        if session_state.get("phase") != "playing":
+            messagebox.showinfo("Match View", "Start a match to open the match view.")
+            return
+        start_doomguy_animation(root, session_state)
+        update_match_view_label()
+
+    match_view_button = tk.Button(menu_frame, text="Show Match View", width=16, command=on_toggle_match_view)
+    style_button(match_view_button)
+    match_view_button.pack(pady=4)
+    session_state["match_view_closed_callback"] = update_match_view_label
+    session_state["match_view_opened_callback"] = update_match_view_label
+
 
     achievements_button = tk.Button(
         menu_frame,
@@ -1980,7 +2986,17 @@ def main():
         width=16,
         command=lambda: open_achievements_window(root, loaded_profile["data"]),
     )
+    style_button(achievements_button)
     achievements_button.pack(pady=4)
+
+    history_button = tk.Button(
+        menu_frame,
+        text="Match History",
+        width=16,
+        command=lambda: open_match_history(root, loaded_profile["data"]),
+    )
+    style_button(history_button)
+    history_button.pack(pady=4)
 
     def on_about():
         messagebox.showinfo(
@@ -1989,6 +3005,7 @@ def main():
         )
 
     about_button = tk.Button(menu_frame, text="About", width=16, command=on_about)
+    style_button(about_button)
     about_button.pack(pady=4)
 
     def on_exit():
@@ -2017,6 +3034,7 @@ def main():
                 )
                 + session_state.get("headshots", 0) * 5,
                 session_state.get("headshots", 0),
+                session_state.get("kills", 0),
             )
             award_xp(loaded_profile["data"], session_state.get("xp_bonus", 0))
             award_weapon_xp(
@@ -2046,27 +3064,139 @@ def main():
         root.destroy()
 
     exit_button = tk.Button(menu_frame, text="Exit", width=16, command=on_exit)
+    style_button(exit_button, danger=True)
     exit_button.pack(pady=4)
 
-    playing_as_label = tk.Label(root, textvariable=playing_as_var, font=("Segoe UI", 10))
-    playing_as_label.pack(padx=24, pady=(0, 6))
+    status_frame = tk.Frame(root, bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
+    status_frame.pack(padx=24, pady=(0, 14), fill="both", expand=True)
+    status_header = tk.Label(
+        status_frame,
+        text="Match Status",
+        font=("Segoe UI", 10, "bold"),
+        bg=THEME["panel"],
+        fg=THEME["accent"],
+    )
+    status_header.pack(anchor="w", padx=14, pady=(10, 6))
 
-    session_status_label = tk.Label(root, textvariable=session_status_var, font=("Segoe UI", 10))
-    session_status_label.pack(padx=24, pady=(0, 6))
+    status_body = tk.Frame(status_frame, bg=THEME["panel"])
+    status_body.pack(padx=14, pady=(0, 12), fill="both", expand=True)
 
-    session_timer_label = tk.Label(root, textvariable=session_timer_var, font=("Segoe UI", 10))
-    session_timer_label.pack(padx=24, pady=(0, 16))
+    playing_as_label = tk.Label(status_body, textvariable=playing_as_var, font=("Segoe UI", 10), bg=THEME["panel"], fg=THEME["text"])
+    playing_as_label.pack(anchor="w", pady=2)
 
-    session_map_label = tk.Label(root, textvariable=session_map_var, font=("Segoe UI", 10))
-    session_map_label.pack(padx=24, pady=(0, 16))
+    session_status_label = tk.Label(status_body, textvariable=session_status_var, font=("Segoe UI", 10), bg=THEME["panel"], fg=THEME["text"])
+    session_status_label.pack(anchor="w", pady=2)
 
-    session_kd_label = tk.Label(root, textvariable=session_kd_var, font=("Segoe UI", 10))
-    session_kd_label.pack(padx=24, pady=(0, 16))
+    session_timer_label = tk.Label(status_body, textvariable=session_timer_var, font=("Segoe UI", 10), bg=THEME["panel"], fg=THEME["text"])
+    session_timer_label.pack(anchor="w", pady=2)
 
-    session_xp_label = tk.Label(root, textvariable=session_xp_var, font=("Segoe UI", 10))
-    session_xp_label.pack(padx=24, pady=(0, 16))
+    session_map_label = tk.Label(status_body, textvariable=session_map_var, font=("Segoe UI", 10), bg=THEME["panel"], fg=THEME["text"])
+    session_map_label.pack(anchor="w", pady=2)
 
-    root.resizable(False, False)
+    session_kd_label = tk.Label(status_body, textvariable=session_kd_var, font=("Segoe UI", 10), bg=THEME["panel"], fg=THEME["text"])
+    session_kd_label.pack(anchor="w", pady=2)
+
+    session_xp_label = tk.Label(status_body, textvariable=session_xp_var, font=("Segoe UI", 10), bg=THEME["panel"], fg=THEME["text"])
+    session_xp_label.pack(anchor="w", pady=2)
+
+    ribbons_frame = tk.Frame(root, bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
+    ribbons_frame.pack(padx=24, pady=(0, 14), fill="both", expand=True)
+    ribbons_header = tk.Label(
+        ribbons_frame,
+        text="Achievement Ribbons",
+        font=("Segoe UI", 10, "bold"),
+        bg=THEME["panel"],
+        fg=THEME["accent"],
+    )
+    ribbons_header.pack(anchor="w", padx=14, pady=(10, 6))
+
+    ribbons_canvas = tk.Canvas(ribbons_frame, width=420, height=90, bg="#121821", highlightthickness=0)
+    ribbons_canvas.pack(padx=14, pady=(0, 8), fill="both", expand=True)
+
+    ribbon_page = {"index": 0}
+
+    def on_prev_ribbons():
+        ribbon_page["index"] = max(0, ribbon_page["index"] - 1)
+        update_ribbon_display()
+
+    def on_next_ribbons():
+        ribbon_page["index"] += 1
+        update_ribbon_display()
+
+    ribbon_controls = tk.Frame(ribbons_frame, bg=THEME["panel"])
+    ribbon_controls.pack(padx=14, pady=(0, 12))
+    prev_ribbon_button = tk.Button(ribbon_controls, text="Prev", width=8, command=on_prev_ribbons)
+    style_button(prev_ribbon_button)
+    prev_ribbon_button.pack(side="left", padx=6)
+    ribbon_page_label = tk.Label(ribbon_controls, text="Page 0/0", font=("Segoe UI", 9), bg=THEME["panel"], fg=THEME["muted"])
+    ribbon_page_label.pack(side="left", padx=6)
+    next_ribbon_button = tk.Button(ribbon_controls, text="Next", width=8, command=on_next_ribbons)
+    style_button(next_ribbon_button)
+    next_ribbon_button.pack(side="left", padx=6)
+
+    def update_ribbon_display():
+        ribbons_canvas.delete("all")
+        if not loaded_profile["data"]:
+            ribbons_canvas.create_text(
+                210,
+                45,
+                text="Load a profile to display earned ribbons.",
+                fill="#7a7a7a",
+                font=("Segoe UI", 9),
+            )
+            ribbon_page_label.configure(text="Page 0/0")
+            prev_ribbon_button.configure(state="disabled")
+            next_ribbon_button.configure(state="disabled")
+            return
+        stats = ensure_stats(loaded_profile["data"])
+        earned = stats.get("achievements", {})
+        earned_entries = [entry for entry in ACHIEVEMENTS if earned.get(entry[0])]
+        if not earned_entries:
+            ribbons_canvas.create_text(
+                210,
+                45,
+                text="No ribbons earned yet.",
+                fill="#7a7a7a",
+                font=("Segoe UI", 9),
+            )
+            ribbon_page_label.configure(text="Page 0/0")
+            prev_ribbon_button.configure(state="disabled")
+            next_ribbon_button.configure(state="disabled")
+            return
+        per_page = 6
+        total_pages = max(1, (len(earned_entries) + per_page - 1) // per_page)
+        ribbon_page["index"] = max(0, min(ribbon_page["index"], total_pages - 1))
+        start_index = ribbon_page["index"] * per_page
+        show_entries = earned_entries[start_index : start_index + per_page]
+        ribbon_page_label.configure(text=f"Page {ribbon_page['index'] + 1}/{total_pages}")
+        prev_ribbon_button.configure(state="normal" if ribbon_page["index"] > 0 else "disabled")
+        next_ribbon_button.configure(state="normal" if ribbon_page["index"] < total_pages - 1 else "disabled")
+        ribbon_width = 200
+        ribbon_height = 26
+        padding_x = 10
+        padding_y = 8
+        stripe_colors = ["#3c6e9b", "#5d9c59", "#b88b3c", "#8c3c5d"]
+        for idx, (_, name, _, _, _, _) in enumerate(show_entries):
+            row = idx // 2
+            col = idx % 2
+            x0 = padding_x + col * (ribbon_width + padding_x)
+            y0 = padding_y + row * (ribbon_height + padding_y)
+            for stripe in range(4):
+                sx0 = x0 + stripe * (ribbon_width // 4)
+                sx1 = sx0 + (ribbon_width // 4)
+                ribbons_canvas.create_rectangle(sx0, y0, sx1, y0 + ribbon_height, fill=stripe_colors[stripe], outline="")
+            ribbons_canvas.create_rectangle(x0, y0, x0 + ribbon_width, y0 + ribbon_height, outline="#1a1a1a")
+            ribbons_canvas.create_text(
+                x0 + ribbon_width / 2,
+                y0 + ribbon_height / 2,
+                text=name,
+                fill="#f2f2f2",
+                font=("Segoe UI", 8, "bold"),
+            )
+
+    session_state["ribbon_refresh_callback"] = update_ribbon_display
+
+    root.resizable(True, True)
     root.protocol("WM_DELETE_WINDOW", on_exit)
     root.mainloop()
 
