@@ -409,51 +409,39 @@ def apply_xp_and_progress(stats, xp_gain):
     prestige_unlocked = bool(stats.get("prestige_unlocked", False))
     master = bool(stats.get("master_prestige", False))
     master_level = int(stats.get("master_level", 1))
+    level = int(stats.get("level", 1))
 
     while True:
         if master:
-            level, remaining, threshold = master_level_progress_with_cap(xp, MASTER_MAX_LEVEL)
-            master_level = level
-            xp = remaining
-            break
-
-        level, remaining, threshold = level_progress_with_cap(xp, BASE_MAX_LEVEL)
-        if not prestige_unlocked:
-            if level < BASE_MAX_LEVEL or remaining < threshold:
-                stats["level"] = level
-                xp = remaining
+            threshold = 1_000_000
+            if xp < threshold or master_level >= MASTER_MAX_LEVEL:
                 break
+            xp -= threshold
+            master_level = min(MASTER_MAX_LEVEL, master_level + 1)
+            continue
+
+        threshold = level_threshold(level)
+        if xp < threshold:
+            break
+        xp -= threshold
+        if level < BASE_MAX_LEVEL:
+            level += 1
+            continue
+        if not prestige_unlocked:
             prestige_unlocked = True
             prestige = 1
-            stats["prestige"] = prestige
-            stats["level"] = 1
-            xp = remaining - threshold
+            level = 1
             continue
-
-        if level < BASE_MAX_LEVEL:
-            stats["level"] = level
-            xp = remaining
-            break
-
-        if remaining >= threshold:
-            remaining -= threshold
-            if prestige < PRESTIGE_MAX:
-                prestige += 1
-                stats["prestige"] = prestige
-                stats["level"] = 1
-                xp = remaining
-                continue
-            master = True
-            stats["master_prestige"] = True
-            stats["master_level"] = 1
-            xp = remaining
+        if prestige < PRESTIGE_MAX:
+            prestige += 1
+            level = 1
             continue
-
-        stats["level"] = level
-        xp = remaining
-        break
+        master = True
+        master_level = 1
+        continue
 
     stats["xp"] = xp
+    stats["level"] = level
     stats["prestige"] = prestige
     stats["prestige_unlocked"] = prestige_unlocked
     stats["master_prestige"] = master
@@ -1683,6 +1671,9 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
         refresh = session_state.get("ribbon_refresh_callback")
         if refresh:
             refresh()
+        profile_refresh = session_state.get("profile_refresh_callback")
+        if profile_refresh:
+            profile_refresh()
         start_lobby_wait(
             root,
             session_state,
@@ -3057,13 +3048,26 @@ def main():
 
     def show_tab(key):
         notebook.select(tabs[key])
+        session_state["current_tab"] = key
 
     def on_tab_changed(event):
         selected = event.widget.select()
         if selected == str(tabs["options"]):
+            session_state["current_tab"] = "options"
             on_options(tabs["options"], loaded_profile["data"], loaded_profile["path"], session_state)
         elif selected == str(tabs["achievements"]):
+            session_state["current_tab"] = "achievements"
             open_achievements_window(tabs["achievements"], loaded_profile["data"])
+        elif selected == str(tabs["profile"]):
+            session_state["current_tab"] = "profile"
+        elif selected == str(tabs["home"]):
+            session_state["current_tab"] = "home"
+        elif selected == str(tabs["history"]):
+            session_state["current_tab"] = "history"
+        elif selected == str(tabs["summaries"]):
+            session_state["current_tab"] = "summaries"
+        elif selected == str(tabs["match"]):
+            session_state["current_tab"] = "match"
 
     notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
 
@@ -3146,6 +3150,8 @@ def main():
     session_state["match_view_closed_callback"] = lambda: None
     session_state["match_view_opened_callback"] = lambda: None
     session_state["ribbon_refresh_callback"] = lambda: None
+    session_state["profile_refresh_callback"] = lambda: None
+    session_state["current_tab"] = "home"
     session_state["summary_container"] = tabs["summaries"]
     session_state["summary_notebook"] = None
     session_state["summary_tabs"] = []
@@ -3213,6 +3219,11 @@ def main():
 
     profile_content = tk.Frame(profile_frame, bg=THEME["bg"])
     profile_content.pack(side="left", fill="both", expand=True)
+    profile_view_state = {"active": False}
+
+    def show_profile_view():
+        profile_view_state["active"] = True
+        view_player_profile(profile_content, loaded_profile["data"], timer_state)
 
     def refresh_profile_list():
         profile_list.delete(0, "end")
@@ -3244,6 +3255,7 @@ def main():
         timer_state["start"] = time.monotonic()
         timer_state["running"] = True
         start_button.configure(text="Play")
+        refresh_profile_button.configure(state="normal")
         update_ribbon_display()
         session_state["running"] = True
         session_status_var.set("Connecting to lobby...")
@@ -3262,7 +3274,9 @@ def main():
             ),
         )
         if show_loadout:
+            profile_view_state["active"] = False
             show_tab("profile")
+            profile_view_state["active"] = False
             open_game_setup_window(
                 profile_content,
                 loaded_profile["data"],
@@ -3276,7 +3290,7 @@ def main():
                 timer_state,
             )
         else:
-            view_player_profile(profile_content, loaded_profile["data"], timer_state)
+            show_profile_view()
         notify(f"Welcome back, {gamertag}.")
 
     def load_selected_profile():
@@ -3298,12 +3312,18 @@ def main():
             if save_path.exists():
                 load_profile_from_path(save_path, show_loadout=True)
             else:
-                view_player_profile(profile_content, loaded_profile["data"], timer_state)
+                show_profile_view()
+        profile_view_state["active"] = False
         open_profile_window(profile_content, on_saved)
 
     create_profile_button = tk.Button(profile_buttons, text="Create New", command=start_profile_create)
     style_button(create_profile_button)
     create_profile_button.pack(fill="x")
+
+    refresh_profile_button = tk.Button(profile_buttons, text="Refresh Stats", command=show_profile_view)
+    style_button(refresh_profile_button)
+    refresh_profile_button.pack(fill="x", pady=(6, 0))
+    refresh_profile_button.configure(state="disabled")
 
     def auto_load_last_profile():
         if loaded_profile["data"] or not LAST_PROFILE_FILE.exists():
@@ -3316,7 +3336,7 @@ def main():
             load_profile_from_path(path, show_loadout=True)
 
     refresh_profile_list()
-    view_player_profile(profile_content, loaded_profile["data"], timer_state)
+    show_profile_view()
     root.after(200, auto_load_last_profile)
     tray_state = {"icon": None}
 
@@ -3384,11 +3404,15 @@ def main():
     style_button(start_button, primary=True)
     start_button.pack(pady=4)
 
+    def on_view_profile():
+        show_tab("profile")
+        show_profile_view()
+
     view_button = tk.Button(
         menu_frame,
         text="View Player Profile",
         width=16,
-        command=lambda: (show_tab("profile"), view_player_profile(profile_content, loaded_profile["data"], timer_state)),
+        command=on_view_profile,
     )
     style_button(view_button)
     view_button.pack(pady=4)
@@ -3499,6 +3523,7 @@ def main():
             session_kd_var,
             session_xp_var,
         )
+        refresh_profile_button.configure(state="disabled")
         if loaded_profile["data"] and loaded_profile["path"]:
             total_time = get_total_play_time(timer_state)
             loaded_profile["data"]["player"]["play_time_seconds"] = total_time
@@ -3661,6 +3686,9 @@ def main():
             )
 
     session_state["ribbon_refresh_callback"] = update_ribbon_display
+    session_state["profile_refresh_callback"] = lambda: (
+        show_profile_view() if session_state.get("current_tab") == "profile" else None
+    )
 
     root.resizable(True, True)
     def on_close_request():
