@@ -2,6 +2,7 @@ import json
 import random
 import time
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk
 try:
     import pystray
@@ -14,6 +15,7 @@ from pathlib import Path
 
 # Core configuration for saves and attribute setup.
 DEFAULT_SAVE_FILE = Path("user_save.json")
+LAST_PROFILE_FILE = Path("last_profile.txt")
 ATTRIBUTE_POINTS = 30
 ATTRIBUTE_MAX = 10
 ATTRIBUTES = (
@@ -32,9 +34,28 @@ MAP_POOL = (
     "SixFlags",
     "Toys-R-Us",
     "Subway",
+    "Overpass",
+    "Highrise",
+    "Favela",
+    "Scrapyard",
+    "Wasteland",
+    "Shipment",
+    "Skidrow",
+    "Estate",
+    "Invasion",
+    "Crossfire",
+    "Backlot",
+    "Vacant",
 )
 ENEMY_POOL = ("Rusher", "Camper", "BK randy")
-WEAPON_POOL = ("Ak-47", "M4A1", "MP5", "FAMAS", "G36C", "P90")
+WEAPON_CATEGORIES = {
+    "Assault Rifle": ("Ak-47", "M4A1", "FAMAS", "G36C", "Kilo 141", "SCAR-H"),
+    "SMG": ("MP5", "P90", "Uzi", "Vector", "PP-Bizon", "MP7"),
+    "Sniper Rifle": ("Kar98k", "HDR", "AX-50", "Dragunov", "SP-R 208", "Intervention"),
+    "Pistol": ("M9", "Glock 18", "Desert Eagle", "P226", "1911", "MP-443"),
+    "Rocket Launcher": ("RPG-7", "Strela-P", "JOKR", "PILA", "Panzerfaust", "AT4"),
+}
+WEAPON_POOL = tuple(weapon for weapons in WEAPON_CATEGORIES.values() for weapon in weapons)
 TEAM_DEATHMATCH_KILL_CAP = 150
 DOMINATION_SCORE_CAP = 600
 FREE_FOR_ALL_KILL_CAP = 30
@@ -147,7 +168,10 @@ CAMO_UNLOCKS = [
     (200, "Gold"),
     (230, "Platinum"),
     (260, "Diamond"),
+    (1000, "Singularity"),
 ]
+CAMO_ORDER = ["None"] + [name for _, name in CAMO_UNLOCKS]
+CAMO_RANK = {name: idx for idx, name in enumerate(CAMO_ORDER)}
 MULTIKILL_BONUS = {
     2: ("double_kills", 20),
     3: ("triple_kills", 40),
@@ -195,6 +219,7 @@ CAMO_COLORS = {
     "Gold": "#d4af37",
     "Platinum": "#c0c0c0",
     "Diamond": "#7fc7ff",
+    "Singularity": "#ffffff",
 }
 ROMAN_NUMERALS = ("I", "II", "III", "IV", "V", "VI", "VII", "VIII")
 ACHIEVEMENT_GROWTH = 1.5
@@ -508,6 +533,13 @@ def rank_display_from_progress(progress):
 def camo_color(name):
     # Resolve a camo name to a display color.
     return CAMO_COLORS.get(name, CAMO_COLORS["None"])
+
+def weapon_category(weapon_name):
+    # Map a weapon to its configured category.
+    for category, weapons in WEAPON_CATEGORIES.items():
+        if weapon_name in weapons:
+            return category
+    return None
 
 
 def rank_color(name):
@@ -848,7 +880,8 @@ def apply_offline_progress(profile, offline_seconds):
     weapon_stats["level"] = level_progress(weapon_stats["xp"])[0]
     weapon_stats["headshots"] = int(weapon_stats.get("headshots", 0)) + headshots
     weapon_stats["kills"] = int(weapon_stats.get("kills", 0)) + kills
-    weapon_stats["camo"] = get_camo_for_headshots(weapon_stats["headshots"])
+    weapon_stats["camo"] = get_camo_for_headshots(profile, weapon, weapon_stats["headshots"])
+    refresh_all_weapon_camos(profile)
 
     profile["player"]["play_time_seconds"] = int(profile["player"].get("play_time_seconds", 0)) + int(offline_seconds)
 
@@ -868,12 +901,98 @@ def award_xp(loaded_profile, xp_gain):
     apply_xp_and_progress(stats, xp_gain)
 
 
-def get_camo_for_headshots(headshot_count):
+def base_camo_for_headshots(headshot_count):
     # Resolve the highest camo unlocked for the given headshot count.
     camo = "None"
     for requirement, name in CAMO_UNLOCKS:
         if headshot_count >= requirement:
             camo = name
+    return camo
+
+
+def camo_rank(name):
+    # Convert camo names into an ordered rank value.
+    return CAMO_RANK.get(name, 0)
+
+
+def cap_camo(camo_name, max_name):
+    # Clamp a camo name to a maximum allowed tier.
+    if camo_rank(camo_name) > camo_rank(max_name):
+        return max_name
+    return camo_name
+
+
+def category_lower_camos_complete(profile, category):
+    # Check if every weapon in a category has unlocked all lower camos.
+    stats = ensure_stats(profile)
+    weapons = stats.get("weapons", {})
+    for weapon in WEAPON_CATEGORIES.get(category, ()):
+        headshots = int(weapons.get(weapon, {}).get("headshots", 0))
+        if camo_rank(base_camo_for_headshots(headshots)) < camo_rank("Obsidian"):
+            return False
+    return True
+
+
+def category_has_camo_at_least(profile, category, camo_name):
+    # See if any weapon in the category has reached the requested camo tier.
+    stats = ensure_stats(profile)
+    weapons = stats.get("weapons", {})
+    for weapon in WEAPON_CATEGORIES.get(category, ()):
+        headshots = int(weapons.get(weapon, {}).get("headshots", 0))
+        if camo_rank(base_camo_for_headshots(headshots)) >= camo_rank(camo_name):
+            return True
+    return False
+
+
+def all_categories_have_camo_at_least(profile, camo_name):
+    # Require at least one weapon per category at the camo tier or higher.
+    for category in WEAPON_CATEGORIES:
+        if not category_has_camo_at_least(profile, category, camo_name):
+            return False
+    return True
+
+
+def all_weapons_have_camo_at_least(profile, camo_name):
+    # Require every weapon to reach the camo tier or higher.
+    stats = ensure_stats(profile)
+    weapons = stats.get("weapons", {})
+    for weapon in WEAPON_POOL:
+        headshots = int(weapons.get(weapon, {}).get("headshots", 0))
+        if camo_rank(base_camo_for_headshots(headshots)) < camo_rank(camo_name):
+            return False
+    return True
+
+
+def refresh_all_weapon_camos(profile):
+    # Re-evaluate camo gates across every weapon.
+    stats = ensure_stats(profile)
+    weapons = stats.get("weapons", {})
+    for weapon_name, weapon_stats in weapons.items():
+        headshots = int(weapon_stats.get("headshots", 0))
+        weapon_stats["camo"] = get_camo_for_headshots(profile, weapon_name, headshots)
+
+
+def get_camo_for_headshots(profile, weapon_name, headshot_count):
+    # Resolve the highest camo unlocked, respecting category gates.
+    camo = base_camo_for_headshots(headshot_count)
+    category = weapon_category(weapon_name)
+
+    if camo in ("Gold", "Platinum", "Diamond", "Singularity") and category:
+        if not category_lower_camos_complete(profile, category):
+            return cap_camo(camo, "Obsidian")
+
+    if camo in ("Platinum", "Diamond", "Singularity"):
+        if not all_categories_have_camo_at_least(profile, "Gold"):
+            return "Gold"
+
+    if camo in ("Diamond", "Singularity"):
+        if not all_weapons_have_camo_at_least(profile, "Platinum"):
+            return "Platinum"
+
+    if camo == "Singularity":
+        if not all_weapons_have_camo_at_least(profile, "Diamond"):
+            return "Diamond"
+
     return camo
 
 
@@ -889,7 +1008,8 @@ def award_weapon_xp(loaded_profile, weapon_name, xp_gain, headshots=0, kills=0):
     weapon["level"] = level_progress(weapon["xp"])[0]
     weapon["headshots"] = int(weapon.get("headshots", 0)) + int(headshots)
     weapon["kills"] = int(weapon.get("kills", 0)) + int(kills)
-    weapon["camo"] = get_camo_for_headshots(weapon["headshots"])
+    weapon["camo"] = get_camo_for_headshots(loaded_profile, weapon_name, weapon["headshots"])
+    refresh_all_weapon_camos(loaded_profile)
 
 
 def trigger_nuke(session_state, stats, now, schedule_end, force=False):
@@ -1544,11 +1664,13 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             summary["result"] = (
                 "Win" if summary["team_scores"].get("player", 0) >= summary["team_scores"].get("enemy", 0) else "Loss"
             )
-        xp_gain = compute_xp_gain(
+        base_xp_gain = compute_xp_gain(
             session_state["kills"],
             session_state.get("headshots", 0),
             True,
         )
+        win_multiplier = 2 if summary["result"] == "Win" else 1
+        xp_gain = base_xp_gain * win_multiplier
         summary["xp_gain"] = xp_gain
         summary["xp_total"] = xp_gain + summary["xp_bonus"]
         add_kill_death_stats(
@@ -1573,12 +1695,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
         award_weapon_xp(
             loaded_profile,
             session_state.get("weapon_name", "Ak-47"),
-            compute_xp_gain(
-                session_state["kills"],
-                session_state.get("headshots", 0),
-                True,
-            )
-            + session_state.get("headshots", 0) * 5,
+            (base_xp_gain * win_multiplier) + session_state.get("headshots", 0) * 5,
             session_state.get("headshots", 0),
             session_state.get("kills", 0),
         )
@@ -1962,6 +2079,13 @@ def on_options(parent, loaded_profile, save_path, session_state):
     clear_frame(parent)
     if not loaded_profile or not save_path:
         notify("Load a player profile to edit options.")
+        tk.Label(
+            parent,
+            text="Load a player profile to edit options.",
+            font=("Segoe UI", 10),
+            bg=THEME["bg"],
+            fg=THEME["muted"],
+        ).pack(padx=24, pady=24)
         return
 
     attributes = loaded_profile["player"].get("attributes", {})
@@ -2023,7 +2147,8 @@ def on_options(parent, loaded_profile, save_path, session_state):
         }
         session_state["options"] = loaded_profile["player"]["options"]
         save_profile_data(loaded_profile, save_path)
-        window.destroy()
+        notify("Options saved.")
+        on_options(parent, loaded_profile, save_path, session_state)
 
     offline_row = tk.Frame(window, bg=THEME["bg"])
     offline_row.pack(fill="x", padx=24, pady=(8, 0))
@@ -2052,7 +2177,6 @@ def on_options(parent, loaded_profile, save_path, session_state):
             notify("Match end handler is not available yet.")
             return
         end_match()
-        window.destroy()
 
     end_match_button = tk.Button(window, text="End Current Match", width=20, command=on_end_match)
     end_match_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
@@ -2061,6 +2185,74 @@ def on_options(parent, loaded_profile, save_path, session_state):
     save_button = tk.Button(window, text="Save Options", width=18, command=on_save)
     save_button.configure(bg=THEME["primary"], fg="#f5f7fb", activebackground=THEME["primary_hover"])
     save_button.pack(padx=24, pady=(12, 18))
+
+    debug_container = tk.Frame(window, bg=THEME["bg"], height=32)
+    debug_container.pack(padx=24, pady=(0, 16), fill="x")
+    debug_text = tk.Label(debug_container, text="Singularity debug text", font=("Segoe UI", 10), bg=THEME["bg"])
+    debug_text.place(relx=0.5, y=8, anchor="n")
+
+    debug_anim = {"index": 0}
+    debug_colors = ["#ff5f6d", "#ffc371", "#7dffb8", "#7fc7ff", "#c77dff"]
+    debug_offsets = [0, 1, 2, 3, 4, 3, 2, 1]
+
+    def animate_debug_text():
+        if not debug_text.winfo_exists():
+            return
+        color = debug_colors[debug_anim["index"] % len(debug_colors)]
+        offset = debug_offsets[debug_anim["index"] % len(debug_offsets)]
+        debug_anim["index"] += 1
+        jitter = 1 if debug_anim["index"] % 2 == 0 else 3
+        debug_text.configure(fg=color, padx=jitter)
+        debug_text.place_configure(y=8 + offset)
+        window.after(250, animate_debug_text)
+
+    animate_debug_text()
+
+    master_container = tk.Frame(window, bg=THEME["bg"], height=34)
+    master_container.pack(padx=24, pady=(0, 16), fill="x")
+    master_font = tkfont.Font(family="Segoe UI", size=10)
+    master_canvas = tk.Canvas(master_container, height=20, bg=THEME["bg"], highlightthickness=0)
+    master_canvas.pack()
+    master_text = "Master Prestige 1000"
+    base_y = 10
+    master_items = []
+    cursor_x = 0
+    for ch in master_text:
+        width = master_font.measure(ch)
+        x_pos = cursor_x + width / 2
+        item = master_canvas.create_text(x_pos, base_y, text=ch, font=master_font, fill=THEME["text"])
+        master_items.append({"item": item, "char": ch, "x": x_pos})
+        cursor_x += width
+    master_canvas.configure(width=max(180, int(cursor_x)))
+
+    master_state = {"index": 0, "frame": 0}
+    master_spin = ["-", "\\", "|", "/"]
+    master_colors = ["#ff5f6d", "#ffc371", "#7dffb8", "#7fc7ff", "#c77dff"]
+
+    def animate_master_debug():
+        if not master_canvas.winfo_exists():
+            return
+        color = master_colors[master_state["frame"] % len(master_colors)]
+        for entry in master_items:
+            master_canvas.itemconfig(entry["item"], fill=color, text=entry["char"])
+            master_canvas.coords(entry["item"], entry["x"], base_y)
+        if master_items:
+            letter_index = master_state["index"] % len(master_items)
+            for _ in range(len(master_items)):
+                if master_items[letter_index]["char"] != " ":
+                    break
+                letter_index = (letter_index + 1) % len(master_items)
+            spin_char = master_spin[master_state["frame"] % len(master_spin)]
+            offset = 3 if master_state["frame"] % 2 == 0 else -3
+            entry = master_items[letter_index]
+            master_canvas.itemconfig(entry["item"], text=spin_char)
+            master_canvas.coords(entry["item"], entry["x"], base_y + offset)
+        master_state["frame"] += 1
+        if master_state["frame"] % len(master_spin) == 0:
+            master_state["index"] += 1
+        window.after(120, animate_master_debug)
+
+    animate_master_debug()
 
 
 
@@ -2197,9 +2389,13 @@ def open_achievements_window(parent, loaded_profile):
     # Display achievements with progress bars.
     clear_frame(parent)
     if not loaded_profile:
-        tk.Label(parent, text="Load a player profile to view achievements.", font=("Segoe UI", 10)).pack(
-            padx=24, pady=24
-        )
+        tk.Label(
+            parent,
+            text="Load a player profile to view achievements.",
+            font=("Segoe UI", 10),
+            bg=THEME["bg"],
+            fg=THEME["muted"],
+        ).pack(padx=24, pady=24)
         return
 
     stats = ensure_stats(loaded_profile)
@@ -2239,8 +2435,24 @@ def open_achievements_window(parent, loaded_profile):
     )
     weapon_toggle.pack(side="left", padx=8)
 
-    frame = tk.Frame(window, bg=THEME["bg"])
-    frame.pack(padx=16, pady=(0, 16), fill="both", expand=True)
+    list_body = tk.Frame(window, bg=THEME["bg"])
+    list_body.pack(padx=16, pady=(0, 16), fill="both", expand=True)
+    canvas = tk.Canvas(list_body, bg=THEME["bg"], highlightthickness=0)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar = tk.Scrollbar(list_body, orient="vertical", command=canvas.yview)
+    scrollbar.pack(side="right", fill="y")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    frame = tk.Frame(canvas, bg=THEME["bg"])
+    canvas.create_window((0, 0), window=frame, anchor="nw", tags="content")
+    def update_scrollregion(_event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    frame.bind("<Configure>", update_scrollregion)
+
+    def on_canvas_configure(event):
+        canvas.itemconfigure("content", width=event.width)
+
+    canvas.bind("<Configure>", on_canvas_configure)
 
     def is_weapon_entry(entry):
         return entry[2].startswith("weapon_kills:")
@@ -2488,6 +2700,8 @@ def view_player_profile(parent, loaded_profile, timer_state):
     window = parent
     label_style = {"bg": THEME["bg"], "fg": THEME["text"]}
     diamond_swatches = []
+    singularity_swatches = []
+    singularity_labels = []
     diamond_after_id = {"id": None, "index": 0}
 
     def stop_diamond_animation():
@@ -2519,8 +2733,53 @@ def view_player_profile(parent, loaded_profile, timer_state):
     rank_swatch = tk.Canvas(rank_row, width=12, height=12, highlightthickness=0, bg=THEME["bg"])
     rank_swatch.create_rectangle(1, 1, 11, 11, fill=rank_color(rank), outline="#1a1a1a")
     rank_swatch.pack(side="left", padx=(0, 6))
-    rank_label = tk.Label(rank_row, text=f"Rank: {rank}", font=("Segoe UI", 10), **label_style)
-    rank_label.pack(side="left")
+    if rank == "Master of War 1000":
+        rank_font = tkfont.Font(family="Segoe UI", size=10)
+        rank_canvas = tk.Canvas(rank_row, height=20, bg=THEME["bg"], highlightthickness=0)
+        rank_canvas.pack(side="left")
+        rank_text = f"Rank: {rank}"
+        base_y = 10
+        items = []
+        cursor_x = 0
+        for ch in rank_text:
+            width = rank_font.measure(ch)
+            x_pos = cursor_x + width / 2
+            item = rank_canvas.create_text(x_pos, base_y, text=ch, font=rank_font, fill=THEME["text"])
+            items.append({"item": item, "char": ch, "x": x_pos})
+            cursor_x += width
+        rank_canvas.configure(width=max(160, int(cursor_x)))
+
+        spin_state = {"index": 0, "frame": 0}
+        spin_frames = ["-", "\\", "|", "/"]
+        rainbow_colors = ["#ff5f6d", "#ffc371", "#7dffb8", "#7fc7ff", "#c77dff"]
+
+        def animate_master_rank():
+            if not rank_canvas.winfo_exists():
+                return
+            color = rainbow_colors[spin_state["frame"] % len(rainbow_colors)]
+            for entry in items:
+                rank_canvas.itemconfig(entry["item"], fill=color, text=entry["char"])
+                rank_canvas.coords(entry["item"], entry["x"], base_y)
+            if items:
+                letter_index = spin_state["index"] % len(items)
+                for _ in range(len(items)):
+                    if items[letter_index]["char"] != " ":
+                        break
+                    letter_index = (letter_index + 1) % len(items)
+                spin_char = spin_frames[spin_state["frame"] % len(spin_frames)]
+                offset = 3 if spin_state["frame"] % 2 == 0 else -3
+                entry = items[letter_index]
+                rank_canvas.itemconfig(entry["item"], text=spin_char)
+                rank_canvas.coords(entry["item"], entry["x"], base_y + offset)
+            spin_state["frame"] += 1
+            if spin_state["frame"] % len(spin_frames) == 0:
+                spin_state["index"] += 1
+            diamond_after_id["id"] = window.after(120, animate_master_rank)
+
+        animate_master_rank()
+    else:
+        rank_label = tk.Label(rank_row, text=f"Rank: {rank}", font=("Segoe UI", 10), **label_style)
+        rank_label.pack(side="left")
 
     total_xp_label = tk.Label(window, text=f"Total XP: {xp_total}", font=("Segoe UI", 10), **label_style)
     total_xp_label.pack(padx=24, pady=(0, 8))
@@ -2623,6 +2882,8 @@ def view_player_profile(parent, loaded_profile, timer_state):
             swatch.pack(side="left", padx=(4, 6))
             if weapon_camo == "Diamond":
                 diamond_swatches.append(swatch)
+            if weapon_camo == "Singularity":
+                singularity_swatches.append(swatch)
             value = tk.Label(
                 row,
                 text=f"Lv {weapon_level} ({weapon_into}/{weapon_needed}) | HS {weapon_headshots} | {weapon_camo}",
@@ -2630,17 +2891,31 @@ def view_player_profile(parent, loaded_profile, timer_state):
                 **label_style,
             )
             value.pack(side="right")
+            if weapon_camo == "Singularity":
+                singularity_labels.extend([label, value])
 
     def animate_diamond():
-        if not diamond_swatches:
+        alive_diamond = [swatch for swatch in diamond_swatches if swatch.winfo_exists()]
+        alive_singularity = [swatch for swatch in singularity_swatches if swatch.winfo_exists()]
+        alive_labels = [label for label in singularity_labels if label.winfo_exists()]
+        if not alive_diamond and not alive_singularity and not alive_labels:
             return
-        colors = ["#7fc7ff", "#bfe9ff", "#5aaef2", "#e7f7ff"]
-        color = colors[diamond_after_id["index"] % len(colors)]
+        diamond_colors = ["#7fc7ff", "#bfe9ff", "#5aaef2", "#e7f7ff"]
+        singularity_colors = ["#ff5f6d", "#ffc371", "#7dffb8", "#7fc7ff", "#c77dff"]
+        diamond_color = diamond_colors[diamond_after_id["index"] % len(diamond_colors)]
+        singularity_color = singularity_colors[diamond_after_id["index"] % len(singularity_colors)]
         diamond_after_id["index"] += 1
-        for swatch in diamond_swatches:
+        for swatch in alive_diamond:
             swatch.delete("all")
-            swatch.create_rectangle(1, 1, 11, 11, fill=color, outline="#1a1a1a")
-        diamond_after_id["id"] = window.after(300, animate_diamond)
+            swatch.create_rectangle(1, 1, 11, 11, fill=diamond_color, outline="#1a1a1a")
+        for swatch in alive_singularity:
+            swatch.delete("all")
+            swatch.create_rectangle(1, 1, 11, 11, fill=singularity_color, outline="#1a1a1a")
+        if alive_labels:
+            jitter = 1 if diamond_after_id["index"] % 2 == 0 else 3
+            for label in alive_labels:
+                label.configure(fg=singularity_color, padx=jitter)
+        diamond_after_id["id"] = window.after(250, animate_diamond)
 
     animate_diamond()
 
@@ -2670,6 +2945,7 @@ def open_game_setup_window(
     map_var,
     kd_var,
     xp_var,
+    timer_state=None,
 ):
     # Allow the player to pick default weapon and game mode for this profile.
     clear_frame(parent)
@@ -2681,16 +2957,47 @@ def open_game_setup_window(
     header = tk.Label(window, text="Select default loadout and mode.", font=("Segoe UI", 11))
     header.pack(padx=24, pady=(18, 12))
 
+    default_weapon = defaults.get("weapon", WEAPON_POOL[0])
+    default_category = next(
+        (category for category, weapons in WEAPON_CATEGORIES.items() if default_weapon in weapons),
+        next(iter(WEAPON_CATEGORIES)),
+    )
+
+    category_frame = tk.Frame(window)
+    category_frame.pack(padx=24, pady=(0, 8))
+
+    category_label = tk.Label(category_frame, text="Category:", width=18, anchor="w")
+    category_label.pack(side="left")
+
+    category_var = tk.StringVar(value=default_category)
+    category_menu = tk.OptionMenu(category_frame, category_var, *WEAPON_CATEGORIES.keys())
+    category_menu.config(width=18)
+    category_menu.pack(side="right")
+
     weapon_frame = tk.Frame(window)
     weapon_frame.pack(padx=24, pady=(0, 8))
 
     weapon_label = tk.Label(weapon_frame, text="Weapon:", width=18, anchor="w")
     weapon_label.pack(side="left")
 
-    weapon_var = tk.StringVar(value=defaults.get("weapon", WEAPON_POOL[0]))
-    weapon_menu = tk.OptionMenu(weapon_frame, weapon_var, *WEAPON_POOL)
+    initial_weapon = default_weapon
+    if initial_weapon not in WEAPON_CATEGORIES.get(default_category, ()):
+        initial_weapon = WEAPON_CATEGORIES[default_category][0]
+    weapon_var = tk.StringVar(value=initial_weapon)
+    weapon_menu = tk.OptionMenu(weapon_frame, weapon_var, *WEAPON_CATEGORIES[default_category])
     weapon_menu.config(width=18)
     weapon_menu.pack(side="right")
+
+    def refresh_weapon_menu(*_):
+        category = category_var.get()
+        menu = weapon_menu["menu"]
+        menu.delete(0, "end")
+        for weapon in WEAPON_CATEGORIES.get(category, ()):
+            menu.add_command(label=weapon, command=lambda value=weapon: weapon_var.set(value))
+        if weapon_var.get() not in WEAPON_CATEGORIES.get(category, ()):
+            weapon_var.set(WEAPON_CATEGORIES[category][0])
+
+    category_var.trace_add("write", refresh_weapon_menu)
 
     mode_frame = tk.Frame(window)
     mode_frame.pack(padx=24, pady=(0, 12))
@@ -2703,12 +3010,15 @@ def open_game_setup_window(
     mode_menu.config(width=18)
     mode_menu.pack(side="right")
 
-    def on_save():
+    def persist_defaults():
         player["defaults"] = {
             "weapon": weapon_var.get(),
             "game_mode": mode_var.get(),
         }
         save_profile_data(loaded_profile, save_path)
+
+    def on_quick_start():
+        persist_defaults()
         start_game_session(
             parent.winfo_toplevel(),
             session_state,
@@ -2722,8 +3032,16 @@ def open_game_setup_window(
         )
         clear_frame(window)
 
-    save_button = tk.Button(window, text="Save and Close Window", width=22, command=on_save)
-    save_button.pack(pady=(6, 18))
+    def on_save():
+        persist_defaults()
+        notify("Loadout saved.")
+        if timer_state is not None:
+            view_player_profile(window, loaded_profile, timer_state)
+
+    quick_button = tk.Button(window, text="Quick Start", width=22, command=on_quick_start)
+    quick_button.pack(pady=(6, 6))
+    save_button = tk.Button(window, text="Save Loadout", width=22, command=on_save)
+    save_button.pack(pady=(0, 18))
 
 
 def main():
@@ -2774,9 +3092,18 @@ def main():
     def show_tab(key):
         notebook.select(tabs[key])
 
+    def on_tab_changed(event):
+        selected = event.widget.select()
+        if selected == str(tabs["options"]):
+            on_options(tabs["options"], loaded_profile["data"], loaded_profile["path"], session_state)
+        elif selected == str(tabs["achievements"]):
+            open_achievements_window(tabs["achievements"], loaded_profile["data"])
+
+    notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+
     title_label = tk.Label(
         tabs["home"],
-        text="Idle FPS version 0.0.8.1",
+        text="Idle FPS version 0.0.8.1 by ErsatzRealizm",
         font=("Segoe UI", 16, "bold"),
         bg=THEME["bg"],
         fg=THEME["text"],
@@ -2926,13 +3253,18 @@ def main():
         for path in sorted(Path(".").glob("*.json")):
             profile_list.insert("end", path.name)
 
-    def load_profile_from_path(path):
+    def load_profile_from_path(path, show_loadout=True):
+        session_status_var.set("Loading profile...")
         try:
             data = json.loads(Path(path).read_text(encoding="ascii"))
             gamertag = data["player"]["gamertag"]
         except (OSError, json.JSONDecodeError, KeyError, TypeError):
             notify("Selected file is not a valid profile.")
             return
+        try:
+            LAST_PROFILE_FILE.write_text(str(path), encoding="ascii")
+        except OSError:
+            pass
         last_saved = int(data["player"].get("last_saved", time.time()))
         offline_seconds = int(time.time()) - last_saved
         offline_enabled = bool(data["player"].get("options", {}).get("offline_progression", False))
@@ -2945,22 +3277,41 @@ def main():
         timer_state["elapsed"] = int(data["player"].get("play_time_seconds", 0))
         timer_state["start"] = time.monotonic()
         timer_state["running"] = True
-        start_button.configure(text="Loadout Options")
+        start_button.configure(text="Play")
         update_ribbon_display()
         session_state["running"] = True
-        start_lobby_wait(
-            root,
-            session_state,
-            session_status_var,
-            session_timer_var,
-            session_map_var,
-            session_kd_var,
-            session_xp_var,
-            data,
-            loaded_profile["path"],
+        session_status_var.set("Connecting to lobby...")
+        root.after(
+            1200,
+            lambda: start_lobby_wait(
+                root,
+                session_state,
+                session_status_var,
+                session_timer_var,
+                session_map_var,
+                session_kd_var,
+                session_xp_var,
+                data,
+                loaded_profile["path"],
+            ),
         )
-        view_player_profile(profile_content, loaded_profile["data"], timer_state)
-        show_tab("profile")
+        if show_loadout:
+            show_tab("profile")
+            open_game_setup_window(
+                profile_content,
+                loaded_profile["data"],
+                loaded_profile["path"],
+                session_state,
+                session_status_var,
+                session_timer_var,
+                session_map_var,
+                session_kd_var,
+                session_xp_var,
+                timer_state,
+            )
+        else:
+            view_player_profile(profile_content, loaded_profile["data"], timer_state)
+        notify(f"Welcome back, {gamertag}.")
 
     def load_selected_profile():
         selection = profile_list.curselection()
@@ -2979,7 +3330,7 @@ def main():
             refresh_profile_list()
             save_path = Path(f"{sanitize_filename(profile.get('gamertag', 'player'))}.json")
             if save_path.exists():
-                load_profile_from_path(save_path)
+                load_profile_from_path(save_path, show_loadout=True)
             else:
                 view_player_profile(profile_content, loaded_profile["data"], timer_state)
         open_profile_window(profile_content, on_saved)
@@ -2988,8 +3339,19 @@ def main():
     style_button(create_profile_button)
     create_profile_button.pack(fill="x")
 
+    def auto_load_last_profile():
+        if loaded_profile["data"] or not LAST_PROFILE_FILE.exists():
+            return
+        last_path = LAST_PROFILE_FILE.read_text(encoding="ascii").strip()
+        if not last_path:
+            return
+        path = Path(last_path)
+        if path.exists():
+            load_profile_from_path(path, show_loadout=True)
+
     refresh_profile_list()
     view_player_profile(profile_content, loaded_profile["data"], timer_state)
+    root.after(200, auto_load_last_profile)
     tray_state = {"icon": None}
 
     def show_window():
@@ -3045,28 +3407,16 @@ def main():
                 session_map_var,
                 session_kd_var,
                 session_xp_var,
+                timer_state,
             )
             return
         show_tab("profile")
-        start_profile_create()
+        refresh_profile_list()
+        notify("Select a profile to play or create a new one.")
 
-    start_button = tk.Button(menu_frame, text="Start", width=16, command=on_start_click)
+    start_button = tk.Button(menu_frame, text="Play", width=16, command=on_start_click)
     style_button(start_button, primary=True)
     start_button.pack(pady=4)
-
-    def on_load_profile():
-        show_tab("profile")
-        refresh_profile_list()
-        notify("Select a profile from the list to load.")
-
-    load_button = tk.Button(
-        menu_frame,
-        text="Load Player Profile",
-        width=16,
-        command=on_load_profile,
-    )
-    style_button(load_button)
-    load_button.pack(pady=4)
 
     view_button = tk.Button(
         menu_frame,
@@ -3276,7 +3626,15 @@ def main():
             return
         stats = ensure_stats(loaded_profile["data"])
         earned = stats.get("achievements", {})
-        earned_entries = [entry for entry in ACHIEVEMENTS if earned.get(entry[0])]
+        grouped = {}
+        for entry in ACHIEVEMENTS:
+            if not earned.get(entry[0]):
+                continue
+            base_id, level = achievement_base_and_level(entry[0])
+            current = grouped.get(base_id)
+            if current is None or level > current[0]:
+                grouped[base_id] = (level, entry)
+        earned_entries = [entry for _, entry in grouped.values()]
         if not earned_entries:
             ribbons_canvas.create_text(
                 210,
@@ -3301,12 +3659,28 @@ def main():
         ribbon_height = 26
         padding_x = 10
         padding_y = 8
-        stripe_colors = ["#3c6e9b", "#5d9c59", "#b88b3c", "#8c3c5d"]
-        for idx, (_, name, _, _, _, _) in enumerate(show_entries):
+        default_stripes = ["#3c6e9b", "#5d9c59", "#b88b3c", "#8c3c5d"]
+        category_stripes = {
+            "Assault Rifle": ["#5d9c59", "#8b6f2a", "#3c6e9b", "#6f8b2a"],
+            "SMG": ["#6a8cc9", "#4b6fb3", "#8cc96a", "#c9a26a"],
+            "Sniper Rifle": ["#7a7f8c", "#9aa1b0", "#4a5363", "#b0b7c6"],
+            "Pistol": ["#8b5a3c", "#c9a26a", "#6b4a3b", "#b07a4a"],
+            "Rocket Launcher": ["#8c3c5d", "#c95a3c", "#b84a4a", "#f0b14b"],
+        }
+        for idx, (_, name, key, _, _, _) in enumerate(show_entries):
             row = idx // 2
             col = idx % 2
             x0 = padding_x + col * (ribbon_width + padding_x)
             y0 = padding_y + row * (ribbon_height + padding_y)
+            stripe_colors = default_stripes
+            if isinstance(key, str) and key.startswith("weapon_kills:"):
+                weapon_name = key.split("weapon_kills:", 1)[1]
+                category = next(
+                    (cat for cat, weapons in WEAPON_CATEGORIES.items() if weapon_name in weapons),
+                    None,
+                )
+                if category and category in category_stripes:
+                    stripe_colors = category_stripes[category]
             for stripe in range(4):
                 sx0 = x0 + stripe * (ribbon_width // 4)
                 sx1 = sx0 + (ribbon_width // 4)
