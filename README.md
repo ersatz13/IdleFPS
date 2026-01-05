@@ -10,4 +10,4 @@ How to play
 
 you can now view the player profile and inspect results in summaries
 
-you will now be earning xp and leveling up weapons and earning camos 
+you will now be earning xp, leveling up weapons, earning camos, and achievements while the game runs.  
