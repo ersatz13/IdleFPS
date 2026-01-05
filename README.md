@@ -11,3 +11,6 @@ How to play
 you can now view the player profile and inspect results in summaries
 
 you will now be earning xp, leveling up weapons, earning camos, and achievements while the game runs.  
+
+known bugs:
+Player profile and match history do not refresh or load until the buttons are selected from the home screen, the tabs are not loading correctly right now. 
