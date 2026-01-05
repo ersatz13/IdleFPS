@@ -387,6 +387,15 @@ def level_progress_with_cap(xp_total, level_cap):
     return level, remaining, threshold
 
 
+def master_level_progress_with_cap(xp_total, level_cap):
+    # Master prestige uses a flat XP requirement per level.
+    xp_total = max(0, int(xp_total))
+    level = min(level_cap, 1 + xp_total // 1_000_000)
+    remaining = xp_total % 1_000_000
+    threshold = 1_000_000
+    return level, remaining, threshold
+
+
 def rank_for_level(level):
     # Map each rank name to a 3-level span.
     index = max(0, min((int(level) - 1) // 3, len(PLAYER_RANKS) - 1))
@@ -403,7 +412,7 @@ def apply_xp_and_progress(stats, xp_gain):
 
     while True:
         if master:
-            level, remaining, threshold = level_progress_with_cap(xp, MASTER_MAX_LEVEL)
+            level, remaining, threshold = master_level_progress_with_cap(xp, MASTER_MAX_LEVEL)
             master_level = level
             xp = remaining
             break
@@ -453,72 +462,34 @@ def apply_xp_and_progress(stats, xp_gain):
 
 def progress_state(stats, xp_gain=0):
     # Preview progress without mutating stats.
-    xp = int(stats.get("xp", 0)) + int(xp_gain)
-    prestige = int(stats.get("prestige", 0))
-    prestige_unlocked = bool(stats.get("prestige_unlocked", False))
-    master = bool(stats.get("master_prestige", False))
-    master_level = int(stats.get("master_level", 1))
-
-    while True:
-        if master:
-            level, remaining, threshold = level_progress_with_cap(xp, MASTER_MAX_LEVEL)
-            master_level = level
-            return {
-                "level": level,
-                "xp_into": remaining,
-                "xp_needed": threshold,
-                "prestige": prestige,
-                "master": True,
-                "master_level": master_level,
-            }
-
-        level, remaining, threshold = level_progress_with_cap(xp, BASE_MAX_LEVEL)
-        if not prestige_unlocked:
-            if level < BASE_MAX_LEVEL or remaining < threshold:
-                return {
-                    "level": level,
-                    "xp_into": remaining,
-                    "xp_needed": threshold,
-                    "prestige": prestige,
-                    "master": False,
-                    "master_level": master_level,
-                    "prestige_unlocked": False,
-                }
-            prestige_unlocked = True
-            prestige = 1
-            xp = remaining - threshold
-            continue
-
-        if level < BASE_MAX_LEVEL:
-            return {
-                "level": level,
-                "xp_into": remaining,
-                "xp_needed": threshold,
-                "prestige": prestige,
-                "master": False,
-                "master_level": master_level,
-                "prestige_unlocked": prestige_unlocked,
-            }
-
-        if remaining >= threshold:
-            remaining -= threshold
-            if prestige < PRESTIGE_MAX:
-                prestige += 1
-                xp = remaining
-                continue
-            master = True
-            xp = remaining
-            continue
-
+    snapshot = {
+        "xp": int(stats.get("xp", 0)),
+        "prestige": int(stats.get("prestige", 0)),
+        "prestige_unlocked": bool(stats.get("prestige_unlocked", False)),
+        "master_prestige": bool(stats.get("master_prestige", False)),
+        "master_level": int(stats.get("master_level", 1)),
+        "level": int(stats.get("level", 1)),
+    }
+    apply_xp_and_progress(snapshot, xp_gain)
+    if snapshot.get("master_prestige"):
         return {
-            "level": level,
-            "xp_into": remaining,
-            "xp_needed": threshold,
-            "prestige": prestige,
-            "master": False,
-            "master_level": master_level,
-            "prestige_unlocked": prestige_unlocked,
+            "level": int(snapshot.get("level", 1)),
+            "xp_into": int(snapshot.get("xp", 0)),
+            "xp_needed": 1_000_000,
+            "prestige": int(snapshot.get("prestige", 0)),
+            "master": True,
+            "master_level": int(snapshot.get("master_level", 1)),
         }
+    level = int(snapshot.get("level", 1))
+    return {
+        "level": level,
+        "xp_into": int(snapshot.get("xp", 0)),
+        "xp_needed": level_threshold(level),
+        "prestige": int(snapshot.get("prestige", 0)),
+        "master": False,
+        "master_level": int(snapshot.get("master_level", 1)),
+        "prestige_unlocked": bool(snapshot.get("prestige_unlocked", False)),
+    }
 
 
 def rank_display_from_progress(progress):
@@ -1669,10 +1640,11 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             session_state.get("headshots", 0),
             True,
         )
+        bonus_xp = summary["xp_bonus"]
         win_multiplier = 2 if summary["result"] == "Win" else 1
-        xp_gain = base_xp_gain * win_multiplier
-        summary["xp_gain"] = xp_gain
-        summary["xp_total"] = xp_gain + summary["xp_bonus"]
+        xp_gain = (base_xp_gain + bonus_xp) * win_multiplier
+        summary["xp_gain"] = base_xp_gain
+        summary["xp_total"] = xp_gain
         add_kill_death_stats(
             loaded_profile,
             session_state["kills"],
@@ -1695,15 +1667,9 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
         award_weapon_xp(
             loaded_profile,
             session_state.get("weapon_name", "Ak-47"),
-            (base_xp_gain * win_multiplier) + session_state.get("headshots", 0) * 5,
+            (base_xp_gain + bonus_xp) * win_multiplier + session_state.get("headshots", 0) * 5,
             session_state.get("headshots", 0),
             session_state.get("kills", 0),
-        )
-        award_xp(loaded_profile, session_state.get("xp_bonus", 0))
-        award_weapon_xp(
-            loaded_profile,
-            session_state.get("weapon_name", "Ak-47"),
-            session_state.get("xp_bonus", 0),
         )
         bonus = check_achievements(loaded_profile)
         if bonus:
