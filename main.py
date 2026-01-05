@@ -2,7 +2,14 @@ import json
 import random
 import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import ttk
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except Exception:
+    pystray = None
+    Image = None
+    ImageDraw = None
 from pathlib import Path
 
 # Core configuration for saves and attribute setup.
@@ -516,6 +523,21 @@ def get_total_play_time(timer_state):
     return elapsed
 
 
+def clear_frame(frame):
+    # Remove all children from a container frame.
+    for widget in frame.winfo_children():
+        widget.destroy()
+
+
+NOTIFY_CALLBACK = None
+
+
+def notify(message):
+    # Send an in-window notification when available.
+    if NOTIFY_CALLBACK:
+        NOTIFY_CALLBACK(message)
+
+
 def calculate_rates(attributes):
     # Derive kills/deaths rates from player attributes.
     total = sum(attributes.values())
@@ -899,84 +921,57 @@ def trigger_nuke(session_state, stats, now, schedule_end, force=False):
 
 def close_nuke_prompt(session_state):
     # Close the nuke prompt if it's open.
-    prompt = session_state.get("nuke_prompt")
+    prompt = session_state.get("nuke_prompt_frame")
     if prompt:
-        prompt.destroy()
-    session_state["nuke_prompt"] = None
+        prompt.pack_forget()
+    session_state["nuke_prompt_payload"] = None
 
 
 def show_nuke_prompt(root, session_state, stats, schedule_end):
     # Prompt the player to accept a nuclear victory without pausing the match.
-    if session_state.get("nuke_prompt"):
+    if session_state.get("nuke_prompt_payload") is not None:
         return
-    prompt = tk.Toplevel(root)
-    prompt.title("Nuclear Victory")
-    prompt.resizable(True, True)
-
-    label = tk.Label(
-        prompt,
-        text="Nuclear victory ready. Accept and end the match?",
-        font=("Segoe UI", 10),
-    )
-    label.pack(padx=20, pady=(16, 10))
-
-    buttons = tk.Frame(prompt)
-    buttons.pack(pady=(0, 16))
-
-    def accept():
-        close_nuke_prompt(session_state)
-        trigger_nuke(session_state, stats, time.monotonic(), schedule_end, force=True)
-        session_state["pending_nuke"] = False
-
-    def decline():
-        close_nuke_prompt(session_state)
-        session_state["pending_nuke"] = False
-
-    accept_button = tk.Button(buttons, text="Accept", width=10, command=accept)
-    accept_button.pack(side="left", padx=6)
-
-    decline_button = tk.Button(buttons, text="Decline", width=10, command=decline)
-    decline_button.pack(side="left", padx=6)
-
-    def on_close():
-        decline()
-
-    prompt.protocol("WM_DELETE_WINDOW", on_close)
-    session_state["nuke_prompt"] = prompt
+    session_state["nuke_prompt_payload"] = (stats, schedule_end)
+    prompt = session_state.get("nuke_prompt_frame")
+    if prompt:
+        prompt.pack(fill="x", padx=12, pady=(12, 6))
 
 
 def start_doomguy_animation(root, session_state):
     # Create a small animated scene while a game is running.
-    if session_state.get("anim_window"):
-        return
-    window = tk.Toplevel(root)
-    window.title("Match View")
-    window.resizable(True, True)
-
-    canvas = tk.Canvas(window, width=320, height=240, bg="#101820", highlightthickness=0)
-    canvas.pack(fill="both", expand=True)
-
-    session_state["anim_window"] = window
+    canvas = session_state.get("match_canvas")
+    if canvas is None:
+        container = session_state.get("match_container")
+        if container is None:
+            return
+        canvas = tk.Canvas(container, width=320, height=240, bg="#101820", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+        session_state["match_canvas"] = canvas
     session_state["anim_canvas"] = canvas
     session_state["anim_frame"] = 0
-    open_callback = session_state.get("match_view_opened_callback")
-    if open_callback:
-        open_callback()
+    session_state["enemy_hitboxes"] = []
 
-    def on_close():
-        anim_after_id = session_state.get("anim_after_id")
-        if anim_after_id:
-            root.after_cancel(anim_after_id)
-            session_state["anim_after_id"] = None
-        window.destroy()
-        session_state["anim_window"] = None
-        session_state["anim_canvas"] = None
-        session_state["anim_frame"] = 0
-        close_callback = session_state.get("match_view_closed_callback")
-        if close_callback:
-            close_callback()
+    def on_click(event):
+        if session_state.get("phase") != "playing":
+            return
+        now = time.monotonic()
+        if now < session_state.get("respawn_until", 0):
+            return
+        if now < session_state.get("click_lock_until", 0):
+            return
+        hitboxes = session_state.get("enemy_hitboxes", [])
+        for idx, (x, y, r) in enumerate(hitboxes):
+            if (event.x - x) ** 2 + (event.y - y) ** 2 <= r ** 2:
+                handler = session_state.get("apply_player_kill")
+                attributes = session_state.get("attributes", {})
+                if handler:
+                    effects = compute_attribute_effects(attributes, session_state.get("options"))
+                    handler(1, [idx], effects, now)
+                    session_state["enemy_hitboxes"] = []
+                    session_state["click_lock_until"] = now + 0.25
+                break
 
-    window.protocol("WM_DELETE_WINDOW", on_close)
+    canvas.bind("<Button-1>", on_click)
 
     def draw_scene():
         if session_state.get("phase") != "playing" or session_state.get("anim_canvas") is None:
@@ -1057,8 +1052,10 @@ def start_doomguy_animation(root, session_state):
         flash_hit = time.monotonic() - last_kill_time < 0.6
         hit_indices = set(session_state.get("last_kill_indices", [])) if flash_hit else set()
 
+        hitboxes = []
         for idx, name in enumerate(enemies):
             ex, ey = positions[idx % len(positions)]
+            hitboxes.append((ex, ey, 10))
             # Enemy with shadow and highlight for depth.
             canvas.create_oval(ex - 8, ey + 6, ex + 8, ey + 10, fill="#1a1212", outline="")
             canvas.create_oval(ex - 10, ey - 10, ex + 10, ey + 10, fill="#8b2d2d", outline="")
@@ -1070,6 +1067,7 @@ def start_doomguy_animation(root, session_state):
                 canvas.create_line(ex, ey - 6, ex, ey - 2, fill="#f0d24b", width=2)
                 canvas.create_line(ex, ey + 2, ex, ey + 6, fill="#f0d24b", width=2)
             canvas.create_text(ex, ey + 16, text=name, fill="#c0c0c0", font=("Segoe UI", 7))
+        session_state["enemy_hitboxes"] = hitboxes
 
         # Doomguy stick figure with a simple walk cycle.
         respawn_until = session_state.get("respawn_until", 0)
@@ -1242,16 +1240,14 @@ def start_doomguy_animation(root, session_state):
 
 def start_lobby_view(root, session_state, wait_seconds):
     # Show a lobby roster that fills in over the waiting period.
-    if session_state.get("anim_window"):
-        return
-    window = tk.Toplevel(root)
-    window.title("Match Lobby")
-    window.resizable(True, True)
-
-    canvas = tk.Canvas(window, width=320, height=240, bg="#101820", highlightthickness=0)
-    canvas.pack(fill="both", expand=True)
-
-    session_state["anim_window"] = window
+    canvas = session_state.get("match_canvas")
+    if canvas is None:
+        container = session_state.get("match_container")
+        if container is None:
+            return
+        canvas = tk.Canvas(container, width=320, height=240, bg="#101820", highlightthickness=0)
+        canvas.pack(fill="both", expand=True)
+        session_state["match_canvas"] = canvas
     session_state["anim_canvas"] = canvas
     session_state["anim_frame"] = 0
     session_state["lobby_start"] = time.monotonic()
@@ -1264,24 +1260,6 @@ def start_lobby_view(root, session_state, wait_seconds):
         fill_order.append(("enemy", entry.get("name", "Unknown")))
     random.shuffle(fill_order)
     session_state["lobby_fill_order"] = fill_order
-
-    def on_close():
-        anim_after_id = session_state.get("anim_after_id")
-        if anim_after_id:
-            root.after_cancel(anim_after_id)
-            session_state["anim_after_id"] = None
-        window.destroy()
-        session_state["anim_window"] = None
-        session_state["anim_canvas"] = None
-        session_state["anim_frame"] = 0
-        close_callback = session_state.get("match_view_closed_callback")
-        if close_callback:
-            close_callback()
-
-    window.protocol("WM_DELETE_WINDOW", on_close)
-    open_callback = session_state.get("match_view_opened_callback")
-    if open_callback:
-        open_callback()
 
     def draw_lobby():
         if session_state.get("phase") != "waiting" or session_state.get("anim_canvas") is None:
@@ -1347,13 +1325,9 @@ def stop_game_session(root, session_state, status_var, timer_var, map_var, kd_va
     anim_after_id = session_state.get("anim_after_id")
     if anim_after_id:
         root.after_cancel(anim_after_id)
-    anim_window = session_state.get("anim_window")
-    if anim_window:
-        anim_window.destroy()
     session_state["after_id"] = None
     session_state["ticker_id"] = None
     session_state["anim_after_id"] = None
-    session_state["anim_window"] = None
     session_state["anim_canvas"] = None
     session_state["anim_frame"] = 0
     session_state["running"] = False
@@ -1382,11 +1356,8 @@ def start_lobby_wait(root, session_state, status_var, timer_var, map_var, kd_var
     if anim_after_id:
         root.after_cancel(anim_after_id)
         session_state["anim_after_id"] = None
-    if session_state.get("anim_window"):
-        session_state["anim_window"].destroy()
-        session_state["anim_window"] = None
-        session_state["anim_canvas"] = None
-        session_state["anim_frame"] = 0
+    session_state["anim_canvas"] = None
+    session_state["anim_frame"] = 0
     session_state["phase"] = "waiting"
     wait_seconds = random.randint(12, 55)
     if loaded_profile:
@@ -1452,15 +1423,12 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
     session_state["last_kill_count"] = 0
     session_state["headshots_in_last_kill"] = 0
     session_state["kill_feed"] = []
-    if session_state.get("anim_window"):
-        anim_after_id = session_state.get("anim_after_id")
-        if anim_after_id:
-            root.after_cancel(anim_after_id)
-            session_state["anim_after_id"] = None
-        session_state["anim_window"].destroy()
-        session_state["anim_window"] = None
-        session_state["anim_canvas"] = None
-        session_state["anim_frame"] = 0
+    anim_after_id = session_state.get("anim_after_id")
+    if anim_after_id:
+        root.after_cancel(anim_after_id)
+        session_state["anim_after_id"] = None
+    session_state["anim_canvas"] = None
+    session_state["anim_frame"] = 0
 
     session_state["player_name"] = loaded_profile["player"].get("gamertag", "Player")
     next_roster = session_state.pop("next_match_roster", None)
@@ -1523,6 +1491,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
     session_state["encounter_enemies"] = random.choices(ENEMY_POOL, k=random.randint(1, 6))
     session_state["encounter_last_update"] = time.monotonic()
     session_state["weapon_name"] = defaults.get("weapon", "Ak-47")
+    session_state["attributes"] = attributes
     status_var.set(f"Playing {game_mode}")
     map_var.set(f"Now playing on map {map_name}")
     start_doomguy_animation(root, session_state)
@@ -1642,12 +1611,158 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             loaded_profile,
             save_path,
         )
-        open_match_summary(root, summary, session_state)
+        open_match_summary(summary, session_state)
 
     def schedule_end(delay_ms):
         if session_state.get("after_id"):
             root.after_cancel(session_state["after_id"])
         session_state["after_id"] = root.after(delay_ms, end_match)
+
+    def apply_player_kill(kill_count, kill_indices, effects, now):
+        if kill_indices:
+            kill_count = len(kill_indices)
+        if kill_count <= 0:
+            return
+        encounter = session_state.get("encounter_enemies", [])
+        session_state["kills"] += kill_count
+        session_state["totals"]["kills"] += kill_count
+        session_state["current_streak"] += kill_count
+        session_state["team_kills"]["player"] += kill_count
+        if session_state.get("player_entry"):
+            session_state["player_entry"]["kills"] += kill_count
+        if game_mode == "Free for all":
+            roster = session_state.get("teams", {}).get("player_team", [])
+            targets = [entry for entry in roster if not entry.get("is_player")]
+        else:
+            targets = session_state.get("teams", {}).get("enemy_team", [])
+        for _ in range(kill_count):
+            if targets:
+                random.choice(targets)["deaths"] += 1
+        if session_state["current_streak"] > session_state["longest_streak"]:
+            session_state["longest_streak"] = session_state["current_streak"]
+        session_state["last_kill_time"] = now
+        session_state["last_kill_indices"] = kill_indices
+        session_state["last_kill_count"] = kill_count
+        player_name = session_state.get("player_name", "Player")
+        killed_names = [encounter[i] for i in kill_indices] if kill_indices else ["enemy"] * kill_count
+        headshots_in_kill = 0
+        minute = int((now - session_state["match_start"]) // 60)
+        session_state["timeline"]["kills"][minute] = session_state["timeline"]["kills"].get(minute, 0) + kill_count
+        session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + kill_count * 10
+        session_state["totals"]["score"] += kill_count * 10
+        for enemy_name in killed_names:
+            headshot = random.random() < effects["headshot_rate"]
+            if headshot:
+                session_state["headshots"] += 1
+                session_state["totals"]["headshots"] += 1
+                headshots_in_kill += 1
+            suffix = " (Headshot)" if headshot else ""
+            session_state["kill_feed"].append((now, f"{player_name} eliminated {enemy_name}{suffix}"))
+        session_state["headshots_in_last_kill"] = headshots_in_kill
+        if headshots_in_kill:
+            session_state["timeline"]["headshots"][minute] = (
+                session_state["timeline"]["headshots"].get(minute, 0) + headshots_in_kill
+            )
+            headshot_bonus = headshots_in_kill * 5
+            session_state["timeline"]["score"][minute] = (
+                session_state["timeline"]["score"].get(minute, 0) + headshot_bonus
+            )
+            session_state["totals"]["score"] += headshot_bonus
+        multikill = MULTIKILL_BONUS.get(kill_count)
+        if multikill:
+            key, bonus = multikill
+            stats[key] = int(stats.get(key, 0)) + 1
+            session_state["xp_bonus"] += bonus
+            minute = int((now - session_state["match_start"]) // 60)
+            session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + bonus
+            session_state["totals"]["score"] += bonus
+        if now < session_state.get("UAV_bonus_until", 0):
+            session_state["xp_bonus"] += kill_count * 5
+            minute = int((now - session_state["match_start"]) // 60)
+            bonus = kill_count * 5
+            session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + bonus
+            session_state["totals"]["score"] += bonus
+        session_state["encounter_enemies"] = random.choices(ENEMY_POOL, k=random.randint(1, 6))
+        session_state["encounter_last_update"] = now
+        if session_state["current_streak"] >= 3 and "UAV" not in session_state["reward_flags"]:
+            session_state["streak_rewards"]["UAV"] = now
+            session_state["reward_flags"].add("UAV")
+            session_state["UAV_bonus_until"] = now + 12
+            stats["UAV_calls"] = int(stats.get("UAV_calls", 0)) + 1
+            session_state["totals"]["UAV"] += 1
+            minute = int((now - session_state["match_start"]) // 60)
+            session_state["timeline"]["UAV"][minute] = session_state["timeline"]["UAV"].get(minute, 0) + 1
+        if session_state["current_streak"] >= 5 and "airstrike" not in session_state["reward_flags"]:
+            session_state["streak_rewards"]["airstrike"] = now
+            session_state["reward_flags"].add("airstrike")
+            air_kills = random.randint(0, 6)
+            session_state["kills"] += air_kills
+            session_state["totals"]["kills"] += air_kills
+            session_state["team_kills"]["player"] += air_kills
+            if session_state.get("player_entry"):
+                session_state["player_entry"]["kills"] += air_kills
+            if game_mode == "Free for all":
+                roster = session_state.get("teams", {}).get("player_team", [])
+                targets = [entry for entry in roster if not entry.get("is_player")]
+            else:
+                targets = session_state.get("teams", {}).get("enemy_team", [])
+            for _ in range(air_kills):
+                if targets:
+                    random.choice(targets)["deaths"] += 1
+            bonus = air_kills * 10
+            session_state["xp_bonus"] += bonus
+            minute = int((now - session_state["match_start"]) // 60)
+            session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + bonus
+            session_state["totals"]["score"] += bonus
+            stats["airstrike_calls"] = int(stats.get("airstrike_calls", 0)) + 1
+            stats["airstrike_kills"] = int(stats.get("airstrike_kills", 0)) + air_kills
+            session_state["totals"]["airstrike"] += 1
+            minute = int((now - session_state["match_start"]) // 60)
+            session_state["timeline"]["airstrike"][minute] = (
+                session_state["timeline"]["airstrike"].get(minute, 0) + 1
+            )
+        if session_state["current_streak"] >= 7 and "helicopter" not in session_state["reward_flags"]:
+            session_state["streak_rewards"]["helicopter"] = now
+            session_state["reward_flags"].add("helicopter")
+            extra_kills = random.randint(0, 22)
+            session_state["kills"] += extra_kills
+            session_state["totals"]["kills"] += extra_kills
+            session_state["team_kills"]["player"] += extra_kills
+            if session_state.get("player_entry"):
+                session_state["player_entry"]["kills"] += extra_kills
+            if game_mode == "Free for all":
+                roster = session_state.get("teams", {}).get("player_team", [])
+                targets = [entry for entry in roster if not entry.get("is_player")]
+            else:
+                targets = session_state.get("teams", {}).get("enemy_team", [])
+            for _ in range(extra_kills):
+                if targets:
+                    random.choice(targets)["deaths"] += 1
+            bonus = extra_kills * 10
+            session_state["xp_bonus"] += bonus
+            minute = int((now - session_state["match_start"]) // 60)
+            session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + bonus
+            session_state["totals"]["score"] += bonus
+            stats["helicopter_calls"] = int(stats.get("helicopter_calls", 0)) + 1
+            stats["helicopter_kills"] = int(stats.get("helicopter_kills", 0)) + extra_kills
+            session_state["totals"]["helicopter"] += 1
+            minute = int((now - session_state["match_start"]) // 60)
+            session_state["timeline"]["helicopter"][minute] = (
+                session_state["timeline"]["helicopter"].get(minute, 0) + 1
+            )
+        if session_state["current_streak"] >= 25 and "nuke" not in session_state["reward_flags"]:
+            session_state["reward_flags"].add("nuke")
+            session_state["pending_nuke"] = True
+            stats["nuke_victories"] = int(stats.get("nuke_victories", 0)) + 1
+            session_state["totals"]["nuke"] += 1
+            minute = int((now - session_state["match_start"]) // 60)
+            session_state["timeline"]["nuke"][minute] = session_state["timeline"]["nuke"].get(minute, 0) + 1
+            session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + 60
+            session_state["totals"]["score"] += 60
+            if schedule_end:
+                show_nuke_prompt(root, session_state, stats, schedule_end)
+
+    session_state["apply_player_kill"] = apply_player_kill
 
     def tick():
         if not session_state.get("running") or session_state.get("phase") != "playing":
@@ -1768,143 +1883,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
                     kill_indices = list(range(len(encounter)))
                 else:
                     kill_indices = [random.randrange(len(encounter))]
-            session_state["kills"] += kill_count
-            session_state["totals"]["kills"] += kill_count
-            session_state["current_streak"] += kill_count
-            session_state["team_kills"]["player"] += kill_count
-            if session_state.get("player_entry"):
-                session_state["player_entry"]["kills"] += kill_count
-            if game_mode == "Free for all":
-                roster = session_state.get("teams", {}).get("player_team", [])
-                targets = [entry for entry in roster if not entry.get("is_player")]
-            else:
-                targets = session_state.get("teams", {}).get("enemy_team", [])
-            for _ in range(kill_count):
-                if targets:
-                    random.choice(targets)["deaths"] += 1
-            if session_state["current_streak"] > session_state["longest_streak"]:
-                session_state["longest_streak"] = session_state["current_streak"]
-            session_state["last_kill_time"] = now
-            session_state["last_kill_indices"] = kill_indices
-            session_state["last_kill_count"] = kill_count
-            player_name = session_state.get("player_name", "Player")
-            killed_names = [encounter[i] for i in kill_indices] if kill_indices else ["enemy"] * kill_count
-            headshots_in_kill = 0
-            minute = int((now - session_state["match_start"]) // 60)
-            session_state["timeline"]["kills"][minute] = session_state["timeline"]["kills"].get(minute, 0) + kill_count
-            session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + kill_count * 10
-            session_state["totals"]["score"] += kill_count * 10
-            for enemy_name in killed_names:
-                headshot = random.random() < effects["headshot_rate"]
-                if headshot:
-                    session_state["headshots"] += 1
-                    session_state["totals"]["headshots"] += 1
-                    headshots_in_kill += 1
-                suffix = " (Headshot)" if headshot else ""
-                session_state["kill_feed"].append((now, f"{player_name} eliminated {enemy_name}{suffix}"))
-            session_state["headshots_in_last_kill"] = headshots_in_kill
-            if headshots_in_kill:
-                session_state["timeline"]["headshots"][minute] = (
-                    session_state["timeline"]["headshots"].get(minute, 0) + headshots_in_kill
-                )
-                headshot_bonus = headshots_in_kill * 5
-                session_state["timeline"]["score"][minute] = (
-                    session_state["timeline"]["score"].get(minute, 0) + headshot_bonus
-                )
-                session_state["totals"]["score"] += headshot_bonus
-            multikill = MULTIKILL_BONUS.get(kill_count)
-            if multikill:
-                key, bonus = multikill
-                stats[key] = int(stats.get(key, 0)) + 1
-                session_state["xp_bonus"] += bonus
-                minute = int((now - session_state["match_start"]) // 60)
-                session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + bonus
-                session_state["totals"]["score"] += bonus
-            if now < session_state.get("UAV_bonus_until", 0):
-                session_state["xp_bonus"] += kill_count * 5
-                minute = int((now - session_state["match_start"]) // 60)
-                bonus = kill_count * 5
-                session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + bonus
-                session_state["totals"]["score"] += bonus
-            session_state["encounter_enemies"] = random.choices(ENEMY_POOL, k=random.randint(1, 6))
-            session_state["encounter_last_update"] = now
-            if session_state["current_streak"] >= 3 and "UAV" not in session_state["reward_flags"]:
-                session_state["streak_rewards"]["UAV"] = now
-                session_state["reward_flags"].add("UAV")
-                session_state["UAV_bonus_until"] = now + 12
-                stats["UAV_calls"] = int(stats.get("UAV_calls", 0)) + 1
-                session_state["totals"]["UAV"] += 1
-                minute = int((now - session_state["match_start"]) // 60)
-                session_state["timeline"]["UAV"][minute] = session_state["timeline"]["UAV"].get(minute, 0) + 1
-            if session_state["current_streak"] >= 5 and "airstrike" not in session_state["reward_flags"]:
-                session_state["streak_rewards"]["airstrike"] = now
-                session_state["reward_flags"].add("airstrike")
-                air_kills = random.randint(0, 6)
-                session_state["kills"] += air_kills
-                session_state["totals"]["kills"] += air_kills
-                session_state["team_kills"]["player"] += air_kills
-                if session_state.get("player_entry"):
-                    session_state["player_entry"]["kills"] += air_kills
-                if game_mode == "Free for all":
-                    roster = session_state.get("teams", {}).get("player_team", [])
-                    targets = [entry for entry in roster if not entry.get("is_player")]
-                else:
-                    targets = session_state.get("teams", {}).get("enemy_team", [])
-                for _ in range(air_kills):
-                    if targets:
-                        random.choice(targets)["deaths"] += 1
-                bonus = air_kills * 10
-                session_state["xp_bonus"] += bonus
-                minute = int((now - session_state["match_start"]) // 60)
-                session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + bonus
-                session_state["totals"]["score"] += bonus
-                stats["airstrike_calls"] = int(stats.get("airstrike_calls", 0)) + 1
-                stats["airstrike_kills"] = int(stats.get("airstrike_kills", 0)) + air_kills
-                session_state["totals"]["airstrike"] += 1
-                minute = int((now - session_state["match_start"]) // 60)
-                session_state["timeline"]["airstrike"][minute] = (
-                    session_state["timeline"]["airstrike"].get(minute, 0) + 1
-                )
-            if session_state["current_streak"] >= 7 and "helicopter" not in session_state["reward_flags"]:
-                session_state["streak_rewards"]["helicopter"] = now
-                session_state["reward_flags"].add("helicopter")
-                extra_kills = random.randint(0, 22)
-                session_state["kills"] += extra_kills
-                session_state["totals"]["kills"] += extra_kills
-                session_state["team_kills"]["player"] += extra_kills
-                if session_state.get("player_entry"):
-                    session_state["player_entry"]["kills"] += extra_kills
-                if game_mode == "Free for all":
-                    roster = session_state.get("teams", {}).get("player_team", [])
-                    targets = [entry for entry in roster if not entry.get("is_player")]
-                else:
-                    targets = session_state.get("teams", {}).get("enemy_team", [])
-                for _ in range(extra_kills):
-                    if targets:
-                        random.choice(targets)["deaths"] += 1
-                bonus = extra_kills * 10
-                session_state["xp_bonus"] += bonus
-                minute = int((now - session_state["match_start"]) // 60)
-                session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + bonus
-                session_state["totals"]["score"] += bonus
-                stats["helicopter_calls"] = int(stats.get("helicopter_calls", 0)) + 1
-                stats["helicopter_kills"] = int(stats.get("helicopter_kills", 0)) + extra_kills
-                session_state["totals"]["helicopter"] += 1
-                minute = int((now - session_state["match_start"]) // 60)
-                session_state["timeline"]["helicopter"][minute] = (
-                    session_state["timeline"]["helicopter"].get(minute, 0) + 1
-                )
-            if session_state["current_streak"] >= 25 and "nuke" not in session_state["reward_flags"]:
-                session_state["reward_flags"].add("nuke")
-                session_state["pending_nuke"] = True
-                stats["nuke_victories"] = int(stats.get("nuke_victories", 0)) + 1
-                session_state["totals"]["nuke"] += 1
-                minute = int((now - session_state["match_start"]) // 60)
-                session_state["timeline"]["nuke"][minute] = session_state["timeline"]["nuke"].get(minute, 0) + 1
-                session_state["timeline"]["score"][minute] = session_state["timeline"]["score"].get(minute, 0) + 60
-                session_state["totals"]["score"] += 60
-                if schedule_end:
-                    show_nuke_prompt(root, session_state, stats, schedule_end)
+            apply_player_kill(kill_count, kill_indices, effects, now)
 
         if now - session_state["death_minute_start"] >= 60:
             session_state["death_minute_start"] = now
@@ -1972,25 +1951,24 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
     schedule_end(duration_seconds * 1000)
 
 
-def on_start(root):
-    # Confirm start and open the profile setup flow.
-    if messagebox.askyesno("Start Game", "Would you like to start the game?"):
-        open_profile_window(root)
+def on_start(parent):
+    # Open the profile setup flow.
+    notify("Create a new profile to get started.")
+    open_profile_window(parent)
 
 
-def on_options(root, loaded_profile, save_path, session_state):
+def on_options(parent, loaded_profile, save_path, session_state):
     # Allow players to override attribute-driven effects.
+    clear_frame(parent)
     if not loaded_profile or not save_path:
-        messagebox.showinfo("Options", "Load a player profile to edit options.")
+        notify("Load a player profile to edit options.")
         return
 
     attributes = loaded_profile["player"].get("attributes", {})
     base_effects = compute_attribute_effects(attributes)
     options = loaded_profile["player"].get("options", {})
 
-    window = tk.Toplevel(root)
-    window.title("Options")
-    window.resizable(True, True)
+    window = parent
 
     header = tk.Label(window, text="Attribute Effects (Overrides)", font=("Segoe UI", 11), bg=THEME["bg"], fg=THEME["text"])
     header.pack(padx=24, pady=(18, 6))
@@ -2032,15 +2010,8 @@ def on_options(root, loaded_profile, save_path, session_state):
 
     def on_offline_toggle():
         if offline_var.get() and not offline_confirmed["accepted"]:
-            accepted = messagebox.askyesno(
-                "Offline Progression",
-                "Offline progression can make achievements and level progression fall out of sync.\n"
-                "Do you want to enable it?",
-            )
-            if not accepted:
-                offline_var.set(False)
-            else:
-                offline_confirmed["accepted"] = True
+            notify("Offline progression can make achievements and level progression fall out of sync.")
+            offline_confirmed["accepted"] = True
 
     def on_save():
         loaded_profile["player"]["options"] = {
@@ -2074,11 +2045,11 @@ def on_options(root, loaded_profile, save_path, session_state):
 
     def on_end_match():
         if session_state.get("phase") != "playing":
-            messagebox.showinfo("Debug", "No active match to end.")
+            notify("No active match to end.")
             return
         end_match = session_state.get("end_match")
         if not end_match:
-            messagebox.showinfo("Debug", "Match end handler is not available yet.")
+            notify("Match end handler is not available yet.")
             return
         end_match()
         window.destroy()
@@ -2091,32 +2062,24 @@ def on_options(root, loaded_profile, save_path, session_state):
     save_button.configure(bg=THEME["primary"], fg="#f5f7fb", activebackground=THEME["primary_hover"])
     save_button.pack(padx=24, pady=(12, 18))
 
-    window.protocol("WM_DELETE_WINDOW", window.destroy)
 
 
 
-def open_match_summary(root, summary, session_state):
-    # Show match summaries in a persistent tabbed window (max 10 tabs).
-    window = session_state.get("summary_window")
-    if window is None or not window.winfo_exists():
-        window = tk.Toplevel(root)
-        window.title("Match Summaries")
-        window.resizable(True, True)
-        notebook = ttk.Notebook(window)
+def open_match_summary(summary, session_state):
+    # Show match summaries in a persistent tabbed view (max 10 tabs).
+    notebook = session_state.get("summary_notebook")
+    if notebook is None:
+        container = session_state.get("summary_container")
+        if container is None:
+            return
+        placeholder = session_state.get("summaries_placeholder")
+        if placeholder:
+            placeholder.destroy()
+            session_state["summaries_placeholder"] = None
+        notebook = ttk.Notebook(container)
         notebook.pack(fill="both", expand=True, padx=8, pady=8)
-        session_state["summary_window"] = window
         session_state["summary_notebook"] = notebook
         session_state["summary_tabs"] = []
-
-        def on_close():
-            window.destroy()
-            session_state["summary_window"] = None
-            session_state["summary_notebook"] = None
-            session_state["summary_tabs"] = []
-
-        window.protocol("WM_DELETE_WINDOW", on_close)
-    else:
-        notebook = session_state.get("summary_notebook")
 
     tabs = session_state.get("summary_tabs", [])
     if len(tabs) >= 10:
@@ -2194,19 +2157,19 @@ def open_match_summary(root, summary, session_state):
     notebook.select(frame)
 
 
-def open_match_history(root, loaded_profile):
+def open_match_history(parent, loaded_profile):
     # Show the last 10 match summaries.
+    clear_frame(parent)
     if not loaded_profile:
-        messagebox.showinfo("Match History", "Load a player profile to view match history.")
+        tk.Label(parent, text="Load a player profile to view match history.", font=("Segoe UI", 10)).pack(
+            padx=24, pady=24
+        )
         return
 
     stats = ensure_stats(loaded_profile)
     history = stats.get("match_history", [])
 
-    window = tk.Toplevel(root)
-    window.title("Match History")
-    window.resizable(True, True)
-
+    window = parent
     frame = tk.Frame(window)
     frame.pack(padx=16, pady=16, fill="both", expand=True)
 
@@ -2230,41 +2193,28 @@ def open_match_history(root, loaded_profile):
         label.pack(side="left")
 
 
-def open_achievements_window(root, loaded_profile):
+def open_achievements_window(parent, loaded_profile):
     # Display achievements with progress bars.
+    clear_frame(parent)
     if not loaded_profile:
-        messagebox.showinfo("Achievements", "Load a player profile to view achievements.")
+        tk.Label(parent, text="Load a player profile to view achievements.", font=("Segoe UI", 10)).pack(
+            padx=24, pady=24
+        )
         return
 
     stats = ensure_stats(loaded_profile)
     earned = stats.setdefault("achievements", {})
 
-    window = tk.Toplevel(root)
-    window.title("Achievements")
-    window.resizable(True, True)
-    window.configure(bg=THEME["bg"])
+    window = parent
 
-    tooltip = {"window": None, "label": None}
+    tooltip_label = tk.Label(window, text="", font=("Segoe UI", 9), bg=THEME["bg"], fg=THEME["muted"])
+    tooltip_label.pack(padx=16, pady=(0, 8))
 
-    def show_tooltip(widget, text):
-        if tooltip["window"]:
-            tooltip["window"].destroy()
-        tw = tk.Toplevel(window)
-        tw.wm_overrideredirect(True)
-        tw.attributes("-topmost", True)
-        x = widget.winfo_rootx() + 10
-        y = widget.winfo_rooty() + 20
-        tw.geometry(f"+{x}+{y}")
-        label = tk.Label(tw, text=text, bg="#1b2230", fg="#c9d4e2", font=("Segoe UI", 9), padx=6, pady=4)
-        label.pack()
-        tooltip["window"] = tw
-        tooltip["label"] = label
+    def show_tooltip(_widget, text):
+        tooltip_label.configure(text=text)
 
     def hide_tooltip(*_):
-        if tooltip["window"]:
-            tooltip["window"].destroy()
-            tooltip["window"] = None
-            tooltip["label"] = None
+        tooltip_label.configure(text="")
 
     header = tk.Label(window, text="Achievement Board", font=("Segoe UI", 11, "bold"), bg=THEME["bg"], fg=THEME["text"])
     header.pack(padx=16, pady=(16, 6))
@@ -2351,11 +2301,10 @@ def open_achievements_window(root, loaded_profile):
 
     draw_achievements()
 
-def open_profile_window(root):
-    # Profile creation dialog for attribute distribution and gamertag entry.
-    window = tk.Toplevel(root)
-    window.title("Player Profile")
-    window.resizable(True, True)
+def open_profile_window(parent, on_saved=None):
+    # Profile creation panel for attribute distribution and gamertag entry.
+    clear_frame(parent)
+    window = parent
     window.configure(bg=THEME["bg"])
     window.configure(bg=THEME["bg"])
 
@@ -2449,11 +2398,11 @@ def open_profile_window(root):
         values = {name: var.get() for name, var in attribute_vars.items()}
         remaining = remaining_points(values.values())
         if remaining != 0:
-            messagebox.showwarning("Points Remaining", "You must spend all 30 points.")
+            notify("You must spend all 30 points.")
             return
         gamertag = gamertag_var.get().strip()
         if not gamertag:
-            messagebox.showwarning("Missing Gamertag", "Please enter your gamertag.")
+            notify("Please enter your gamertag.")
             return
         profile = {
             "gamertag": gamertag,
@@ -2496,45 +2445,28 @@ def open_profile_window(root):
             },
         }
         save_player_profile(profile)
-        messagebox.showinfo("Profile Saved", "Your profile has been saved.")
-        window.destroy()
+        notify("Your profile has been saved.")
+        if on_saved:
+            on_saved(profile)
+        else:
+            clear_frame(window)
 
     gamertag_var.trace_add("write", on_gamertag_change)
     save_button.configure(command=on_save)
 
 
-def load_player_profile(root, playing_as_var):
-    # Load a saved profile from disk and return its contents and path.
-    file_path = filedialog.askopenfilename(
-        parent=root,
-        title="Load Player Profile",
-        filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-    )
-    if not file_path:
-        return None
-    try:
-        path = Path(file_path)
-        data = json.loads(path.read_text(encoding="ascii"))
-        gamertag = data["player"]["gamertag"]
-    except (OSError, json.JSONDecodeError, KeyError, TypeError):
-        messagebox.showerror("Load Failed", "Selected file is not a valid profile.")
-        return None
 
-    last_saved = int(data["player"].get("last_saved", time.time()))
-    offline_seconds = int(time.time()) - last_saved
-    offline_enabled = bool(data["player"].get("options", {}).get("offline_progression", False))
-    if offline_enabled and offline_seconds >= 60:
-        apply_offline_progress(data, offline_seconds)
-        save_profile_data(data, path)
-
-    playing_as_var.set(f"Playing as: {gamertag}")
-    return data, path
-
-
-def view_player_profile(root, loaded_profile, timer_state):
+def view_player_profile(parent, loaded_profile, timer_state):
     # Show a read-only view of the currently loaded profile.
+    clear_frame(parent)
     if not loaded_profile:
-        messagebox.showinfo("No Profile Loaded", "Load a player profile first.")
+        tk.Label(
+            parent,
+            text="Load a player profile first.",
+            font=("Segoe UI", 10),
+            bg=THEME["bg"],
+            fg=THEME["text"],
+        ).pack(padx=24, pady=24)
         return
     player = loaded_profile["player"]
     gamertag = player["gamertag"]
@@ -2553,9 +2485,8 @@ def view_player_profile(root, loaded_profile, timer_state):
     xp_needed = progress["xp_needed"]
     rank = rank_display_from_progress(progress)
 
-    window = tk.Toplevel(root)
-    window.title("Player Profile")
-    window.resizable(True, True)
+    window = parent
+    label_style = {"bg": THEME["bg"], "fg": THEME["text"]}
     diamond_swatches = []
     diamond_after_id = {"id": None, "index": 0}
 
@@ -2564,28 +2495,34 @@ def view_player_profile(root, loaded_profile, timer_state):
             window.after_cancel(diamond_after_id["id"])
             diamond_after_id["id"] = None
 
-    title = tk.Label(window, text=f"Gamertag: {gamertag}", font=("Segoe UI", 11))
+    title = tk.Label(window, text=f"Gamertag: {gamertag}", font=("Segoe UI", 11), **label_style)
     title.pack(padx=24, pady=(18, 10))
 
-    time_label = tk.Label(window, text=f"Time Played: {format_duration(total_time)}", font=("Segoe UI", 10))
+    time_label = tk.Label(
+        window,
+        text=f"Time Played: {format_duration(total_time)}",
+        font=("Segoe UI", 10),
+        **label_style,
+    )
     time_label.pack(padx=24, pady=(0, 8))
 
     level_label = tk.Label(
         window,
         text=f"Level: {level} ({xp_into}/{xp_needed} XP)",
         font=("Segoe UI", 10),
+        **label_style,
     )
     level_label.pack(padx=24, pady=(0, 8))
 
-    rank_row = tk.Frame(window)
+    rank_row = tk.Frame(window, bg=THEME["bg"])
     rank_row.pack(padx=24, pady=(0, 8), fill="x")
-    rank_swatch = tk.Canvas(rank_row, width=12, height=12, highlightthickness=0)
+    rank_swatch = tk.Canvas(rank_row, width=12, height=12, highlightthickness=0, bg=THEME["bg"])
     rank_swatch.create_rectangle(1, 1, 11, 11, fill=rank_color(rank), outline="#1a1a1a")
     rank_swatch.pack(side="left", padx=(0, 6))
-    rank_label = tk.Label(rank_row, text=f"Rank: {rank}", font=("Segoe UI", 10))
+    rank_label = tk.Label(rank_row, text=f"Rank: {rank}", font=("Segoe UI", 10), **label_style)
     rank_label.pack(side="left")
 
-    total_xp_label = tk.Label(window, text=f"Total XP: {xp_total}", font=("Segoe UI", 10))
+    total_xp_label = tk.Label(window, text=f"Total XP: {xp_total}", font=("Segoe UI", 10), **label_style)
     total_xp_label.pack(padx=24, pady=(0, 8))
 
     wins = int(stats.get("wins", 0))
@@ -2594,6 +2531,7 @@ def view_player_profile(root, loaded_profile, timer_state):
         window,
         text=f"Kills: {kills} | Deaths: {deaths} | K/D Ratio: {kd_ratio:.2f}",
         font=("Segoe UI", 10),
+        **label_style,
     )
     kd_label.pack(padx=24, pady=(0, 6))
 
@@ -2601,6 +2539,7 @@ def view_player_profile(root, loaded_profile, timer_state):
         window,
         text=f"Wins: {wins} | Losses: {losses}",
         font=("Segoe UI", 10),
+        **label_style,
     )
     wl_label.pack(padx=24, pady=(0, 8))
 
@@ -2608,10 +2547,11 @@ def view_player_profile(root, loaded_profile, timer_state):
         window,
         text=f"Longest Kill Streak: {longest_streak}",
         font=("Segoe UI", 10),
+        **label_style,
     )
     streak_label.pack(padx=24, pady=(0, 8))
 
-    headshot_label = tk.Label(window, text=f"Headshots: {headshots}", font=("Segoe UI", 10))
+    headshot_label = tk.Label(window, text=f"Headshots: {headshots}", font=("Segoe UI", 10), **label_style)
     headshot_label.pack(padx=24, pady=(0, 8))
 
     UAV_calls = int(stats.get("UAV_calls", 0))
@@ -2634,22 +2574,23 @@ def view_player_profile(root, loaded_profile, timer_state):
             f"(Kills {helicopter_kills}) | Nukes: {nuke_victories}"
         ),
         font=("Segoe UI", 10),
+        **label_style,
     )
     rewards_label.pack(padx=24, pady=(0, 8))
 
     mode_wins = stats.get("game_mode_wins", {})
     mode_losses = stats.get("game_mode_losses", {})
     if mode_wins or mode_losses:
-        mode_header = tk.Label(window, text="Mode Record", font=("Segoe UI", 10))
+        mode_header = tk.Label(window, text="Mode Record", font=("Segoe UI", 10), **label_style)
         mode_header.pack(padx=24, pady=(4, 6))
         for mode_name in sorted(set(mode_wins) | set(mode_losses)):
             wins_value = int(mode_wins.get(mode_name, 0))
             losses_value = int(mode_losses.get(mode_name, 0))
-            row = tk.Frame(window)
+            row = tk.Frame(window, bg=THEME["bg"])
             row.pack(fill="x", padx=24, pady=1)
-            label = tk.Label(row, text=mode_name, width=16, anchor="w")
+            label = tk.Label(row, text=mode_name, width=16, anchor="w", **label_style)
             label.pack(side="left")
-            value = tk.Label(row, text=f"W {wins_value} / L {losses_value}", anchor="e")
+            value = tk.Label(row, text=f"W {wins_value} / L {losses_value}", anchor="e", **label_style)
             value.pack(side="right")
 
     multikill_label = tk.Label(
@@ -2659,12 +2600,13 @@ def view_player_profile(root, loaded_profile, timer_state):
             f"Monster: {monster_kills} | Team: {team_kills}"
         ),
         font=("Segoe UI", 10),
+        **label_style,
     )
     multikill_label.pack(padx=24, pady=(0, 8))
 
     weapons = stats.get("weapons", {})
     if weapons:
-        weapon_header = tk.Label(window, text="Weapon Progression", font=("Segoe UI", 10))
+        weapon_header = tk.Label(window, text="Weapon Progression", font=("Segoe UI", 10), **label_style)
         weapon_header.pack(padx=24, pady=(4, 6))
         for weapon_name in sorted(weapons):
             weapon_stats = weapons[weapon_name]
@@ -2672,11 +2614,11 @@ def view_player_profile(root, loaded_profile, timer_state):
             weapon_level, weapon_into, weapon_needed = level_progress(weapon_xp)
             weapon_headshots = int(weapon_stats.get("headshots", 0))
             weapon_camo = weapon_stats.get("camo", "None")
-            row = tk.Frame(window)
+            row = tk.Frame(window, bg=THEME["bg"])
             row.pack(fill="x", padx=24, pady=1)
-            label = tk.Label(row, text=weapon_name, width=14, anchor="w")
+            label = tk.Label(row, text=weapon_name, width=14, anchor="w", **label_style)
             label.pack(side="left")
-            swatch = tk.Canvas(row, width=12, height=12, highlightthickness=0)
+            swatch = tk.Canvas(row, width=12, height=12, highlightthickness=0, bg=THEME["bg"])
             swatch.create_rectangle(1, 1, 11, 11, fill=camo_color(weapon_camo), outline="#1a1a1a")
             swatch.pack(side="left", padx=(4, 6))
             if weapon_camo == "Diamond":
@@ -2685,6 +2627,7 @@ def view_player_profile(root, loaded_profile, timer_state):
                 row,
                 text=f"Lv {weapon_level} ({weapon_into}/{weapon_needed}) | HS {weapon_headshots} | {weapon_camo}",
                 anchor="e",
+                **label_style,
             )
             value.pack(side="right")
 
@@ -2703,25 +2646,22 @@ def view_player_profile(root, loaded_profile, timer_state):
 
     def on_close():
         stop_diamond_animation()
-        window.destroy()
 
-    window.protocol("WM_DELETE_WINDOW", on_close)
-
-    attrs_frame = tk.Frame(window)
+    attrs_frame = tk.Frame(window, bg=THEME["bg"])
     attrs_frame.pack(padx=24, pady=(0, 18))
 
     for name in ATTRIBUTES:
         value = attributes.get(name, 0)
-        row = tk.Frame(attrs_frame)
+        row = tk.Frame(attrs_frame, bg=THEME["bg"])
         row.pack(fill="x", pady=2)
-        label = tk.Label(row, text=name, width=18, anchor="w")
+        label = tk.Label(row, text=name, width=18, anchor="w", **label_style)
         label.pack(side="left")
-        number = tk.Label(row, text=str(value), width=4, anchor="e")
+        number = tk.Label(row, text=str(value), width=4, anchor="e", **label_style)
         number.pack(side="right")
 
 
 def open_game_setup_window(
-    root,
+    parent,
     loaded_profile,
     save_path,
     session_state,
@@ -2732,12 +2672,11 @@ def open_game_setup_window(
     xp_var,
 ):
     # Allow the player to pick default weapon and game mode for this profile.
+    clear_frame(parent)
     player = loaded_profile["player"]
     defaults = player.get("defaults", {})
 
-    window = tk.Toplevel(root)
-    window.title("Game Setup")
-    window.resizable(True, True)
+    window = parent
 
     header = tk.Label(window, text="Select default loadout and mode.", font=("Segoe UI", 11))
     header.pack(padx=24, pady=(18, 12))
@@ -2771,7 +2710,7 @@ def open_game_setup_window(
         }
         save_profile_data(loaded_profile, save_path)
         start_game_session(
-            root,
+            parent.winfo_toplevel(),
             session_state,
             status_var,
             timer_var,
@@ -2781,7 +2720,7 @@ def open_game_setup_window(
             loaded_profile,
             save_path,
         )
-        window.destroy()
+        clear_frame(window)
 
     save_button = tk.Button(window, text="Save and Close Window", width=22, command=on_save)
     save_button.pack(pady=(6, 18))
@@ -2793,16 +2732,58 @@ def main():
     root.title("Idle FPS")
     root.configure(bg=THEME["bg"])
 
-    title_label = tk.Label(
+    notify_var = tk.StringVar(value="")
+    notify_label = tk.Label(
         root,
-        text="Idle FPS version 0.0.0.1",
+        textvariable=notify_var,
+        font=("Segoe UI", 9),
+        bg=THEME["panel"],
+        fg=THEME["accent"],
+        anchor="w",
+    )
+    notify_label.pack(fill="x", padx=12, pady=(8, 4))
+
+    def set_notify(message):
+        notify_var.set(message)
+        if message:
+            root.after(4000, lambda: notify_var.set(""))
+
+    global NOTIFY_CALLBACK
+    NOTIFY_CALLBACK = set_notify
+
+    notebook = ttk.Notebook(root)
+    notebook.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+    tabs = {
+        "home": tk.Frame(notebook, bg=THEME["bg"]),
+        "profile": tk.Frame(notebook, bg=THEME["bg"]),
+        "options": tk.Frame(notebook, bg=THEME["bg"]),
+        "achievements": tk.Frame(notebook, bg=THEME["bg"]),
+        "history": tk.Frame(notebook, bg=THEME["bg"]),
+        "summaries": tk.Frame(notebook, bg=THEME["bg"]),
+        "match": tk.Frame(notebook, bg=THEME["bg"]),
+    }
+    notebook.add(tabs["home"], text="Home")
+    notebook.add(tabs["profile"], text="Profile")
+    notebook.add(tabs["options"], text="Options")
+    notebook.add(tabs["achievements"], text="Achievements")
+    notebook.add(tabs["history"], text="History")
+    notebook.add(tabs["summaries"], text="Summaries")
+    notebook.add(tabs["match"], text="Match")
+
+    def show_tab(key):
+        notebook.select(tabs[key])
+
+    title_label = tk.Label(
+        tabs["home"],
+        text="Idle FPS version 0.0.8.1",
         font=("Segoe UI", 16, "bold"),
         bg=THEME["bg"],
         fg=THEME["text"],
     )
     title_label.pack(padx=24, pady=(22, 12))
 
-    actions_frame = tk.Frame(root, bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
+    actions_frame = tk.Frame(tabs["home"], bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
     actions_frame.pack(padx=24, pady=(0, 14), fill="both", expand=True)
     actions_header = tk.Label(
         actions_frame,
@@ -2847,7 +2828,6 @@ def main():
         "after_id": None,
         "ticker_id": None,
         "end_time": 0.0,
-        "anim_window": None,
         "anim_canvas": None,
         "anim_after_id": None,
         "anim_frame": 0,
@@ -2873,11 +2853,190 @@ def main():
     session_state["match_view_closed_callback"] = lambda: None
     session_state["match_view_opened_callback"] = lambda: None
     session_state["ribbon_refresh_callback"] = lambda: None
+    session_state["summary_container"] = tabs["summaries"]
+    session_state["summary_notebook"] = None
+    session_state["summary_tabs"] = []
+    session_state["match_container"] = tabs["match"]
+    session_state["match_canvas"] = None
+    session_state["nuke_prompt_payload"] = None
+
+    summaries_placeholder = tk.Label(
+        tabs["summaries"],
+        text="Match summaries will appear here.",
+        font=("Segoe UI", 10),
+        bg=THEME["bg"],
+        fg=THEME["muted"],
+    )
+    summaries_placeholder.pack(pady=24)
+    session_state["summaries_placeholder"] = summaries_placeholder
+
+    match_prompt = tk.Frame(tabs["match"], bg=THEME["panel"])
+    match_prompt.pack(fill="x", padx=12, pady=(12, 6))
+    match_prompt_label = tk.Label(
+        match_prompt,
+        text="Nuclear victory ready. Accept and end the match?",
+        font=("Segoe UI", 10),
+        bg=THEME["panel"],
+        fg=THEME["text"],
+    )
+    match_prompt_label.pack(side="left", padx=8)
+    match_prompt.pack_forget()
+
+    def accept_nuke():
+        payload = session_state.get("nuke_prompt_payload")
+        if payload:
+            stats, schedule_end = payload
+            trigger_nuke(session_state, stats, time.monotonic(), schedule_end, force=True)
+        close_nuke_prompt(session_state)
+
+    def decline_nuke():
+        close_nuke_prompt(session_state)
+        session_state["pending_nuke"] = False
+
+    accept_nuke_button = tk.Button(match_prompt, text="Accept", width=10, command=accept_nuke)
+    style_button(accept_nuke_button, primary=True)
+    accept_nuke_button.pack(side="right", padx=6)
+
+    decline_nuke_button = tk.Button(match_prompt, text="Decline", width=10, command=decline_nuke)
+    style_button(decline_nuke_button)
+    decline_nuke_button.pack(side="right", padx=6)
+
+    session_state["nuke_prompt_frame"] = match_prompt
+
+    profile_frame = tk.Frame(tabs["profile"], bg=THEME["bg"])
+    profile_frame.pack(fill="both", expand=True, padx=16, pady=16)
+
+    profile_sidebar = tk.Frame(profile_frame, bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
+    profile_sidebar.pack(side="left", fill="y", padx=(0, 12))
+
+    profile_list_label = tk.Label(profile_sidebar, text="Profiles", font=("Segoe UI", 10, "bold"), bg=THEME["panel"], fg=THEME["accent"])
+    profile_list_label.pack(anchor="w", padx=10, pady=(10, 6))
+
+    profile_list = tk.Listbox(profile_sidebar, height=12, width=24)
+    profile_list.pack(padx=10, pady=(0, 10))
+
+    profile_buttons = tk.Frame(profile_sidebar, bg=THEME["panel"])
+    profile_buttons.pack(padx=10, pady=(0, 10), fill="x")
+
+    profile_content = tk.Frame(profile_frame, bg=THEME["bg"])
+    profile_content.pack(side="left", fill="both", expand=True)
+
+    def refresh_profile_list():
+        profile_list.delete(0, "end")
+        for path in sorted(Path(".").glob("*.json")):
+            profile_list.insert("end", path.name)
+
+    def load_profile_from_path(path):
+        try:
+            data = json.loads(Path(path).read_text(encoding="ascii"))
+            gamertag = data["player"]["gamertag"]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            notify("Selected file is not a valid profile.")
+            return
+        last_saved = int(data["player"].get("last_saved", time.time()))
+        offline_seconds = int(time.time()) - last_saved
+        offline_enabled = bool(data["player"].get("options", {}).get("offline_progression", False))
+        if offline_enabled and offline_seconds >= 60:
+            apply_offline_progress(data, offline_seconds)
+            save_profile_data(data, Path(path))
+        loaded_profile["data"] = data
+        loaded_profile["path"] = Path(path)
+        playing_as_var.set(f"Playing as: {gamertag}")
+        timer_state["elapsed"] = int(data["player"].get("play_time_seconds", 0))
+        timer_state["start"] = time.monotonic()
+        timer_state["running"] = True
+        start_button.configure(text="Loadout Options")
+        update_ribbon_display()
+        session_state["running"] = True
+        start_lobby_wait(
+            root,
+            session_state,
+            session_status_var,
+            session_timer_var,
+            session_map_var,
+            session_kd_var,
+            session_xp_var,
+            data,
+            loaded_profile["path"],
+        )
+        view_player_profile(profile_content, loaded_profile["data"], timer_state)
+        show_tab("profile")
+
+    def load_selected_profile():
+        selection = profile_list.curselection()
+        if not selection:
+            notify("Select a profile to load.")
+            return
+        filename = profile_list.get(selection[0])
+        load_profile_from_path(filename)
+
+    load_profile_button = tk.Button(profile_buttons, text="Load Selected", command=load_selected_profile)
+    style_button(load_profile_button)
+    load_profile_button.pack(fill="x", pady=(0, 6))
+
+    def start_profile_create():
+        def on_saved(profile):
+            refresh_profile_list()
+            save_path = Path(f"{sanitize_filename(profile.get('gamertag', 'player'))}.json")
+            if save_path.exists():
+                load_profile_from_path(save_path)
+            else:
+                view_player_profile(profile_content, loaded_profile["data"], timer_state)
+        open_profile_window(profile_content, on_saved)
+
+    create_profile_button = tk.Button(profile_buttons, text="Create New", command=start_profile_create)
+    style_button(create_profile_button)
+    create_profile_button.pack(fill="x")
+
+    refresh_profile_list()
+    view_player_profile(profile_content, loaded_profile["data"], timer_state)
+    tray_state = {"icon": None}
+
+    def show_window():
+        root.deiconify()
+        root.lift()
+        root.focus_force()
+
+    def create_tray_icon():
+        if tray_state["icon"] or pystray is None or Image is None:
+            return
+        image = Image.new("RGB", (64, 64), "#1f2a36")
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((8, 8, 56, 56), outline="#7fc7ff", width=3)
+        draw.line((32, 14, 32, 50), fill="#d6e2f0", width=2)
+        draw.line((14, 32, 50, 32), fill="#d6e2f0", width=2)
+
+        def on_show(icon, _item):
+            icon.stop()
+            tray_state["icon"] = None
+            root.after(0, show_window)
+
+        def on_exit_tray(icon, _item):
+            icon.stop()
+            tray_state["icon"] = None
+            root.after(0, on_exit)
+
+        icon = pystray.Icon(
+            "IdleFPS",
+            image,
+            "Idle FPS",
+            menu=pystray.Menu(
+                pystray.MenuItem("Show", on_show),
+                pystray.MenuItem("Exit", on_exit_tray),
+            ),
+        )
+        tray_state["icon"] = icon
+        icon.run_detached()
+
+    def hide_to_tray():
+        root.withdraw()
+        create_tray_icon()
 
     def on_start_click():
         if loaded_profile["data"] and loaded_profile["path"]:
+            show_tab("profile")
             open_game_setup_window(
-                root,
+                profile_content,
                 loaded_profile["data"],
                 loaded_profile["path"],
                 session_state,
@@ -2888,39 +3047,17 @@ def main():
                 session_xp_var,
             )
             return
-        on_start(root)
+        show_tab("profile")
+        start_profile_create()
 
     start_button = tk.Button(menu_frame, text="Start", width=16, command=on_start_click)
     style_button(start_button, primary=True)
     start_button.pack(pady=4)
 
     def on_load_profile():
-        profile = load_player_profile(root, playing_as_var)
-        if profile:
-            data, path = profile
-            loaded_profile["data"] = data
-            loaded_profile["path"] = path
-            timer_state["elapsed"] = int(data["player"].get("play_time_seconds", 0))
-            timer_state["start"] = time.monotonic()
-            timer_state["running"] = True
-            view_button.pack(pady=4)
-            start_button.configure(text="Loadout Options")
-            update_ribbon_display()
-            session_state["running"] = True
-            start_lobby_wait(
-                root,
-                session_state,
-                session_status_var,
-                session_timer_var,
-                session_map_var,
-                session_kd_var,
-                session_xp_var,
-                data,
-                path,
-            )
-        elif loaded_profile["data"] is None:
-            start_button.configure(text="Start")
-            update_ribbon_display()
+        show_tab("profile")
+        refresh_profile_list()
+        notify("Select a profile from the list to load.")
 
     load_button = tk.Button(
         menu_frame,
@@ -2935,45 +3072,33 @@ def main():
         menu_frame,
         text="View Player Profile",
         width=16,
-        command=lambda: view_player_profile(root, loaded_profile["data"], timer_state),
+        command=lambda: (show_tab("profile"), view_player_profile(profile_content, loaded_profile["data"], timer_state)),
     )
     style_button(view_button)
-    view_button.pack_forget()
+    view_button.pack(pady=4)
 
     options_button = tk.Button(
         menu_frame,
         text="Options",
         width=16,
-        command=lambda: on_options(root, loaded_profile["data"], loaded_profile["path"], session_state),
+        command=lambda: (show_tab("options"), on_options(tabs["options"], loaded_profile["data"], loaded_profile["path"], session_state)),
     )
     style_button(options_button)
     options_button.pack(pady=4)
 
     def update_match_view_label():
-        if session_state.get("anim_window"):
-            match_view_button.configure(text="Hide Match View")
-        else:
-            match_view_button.configure(text="Show Match View")
+        match_view_button.configure(text="Match / Lobby View")
 
     def on_toggle_match_view():
-        if session_state.get("anim_window"):
-            anim_after_id = session_state.get("anim_after_id")
-            if anim_after_id:
-                root.after_cancel(anim_after_id)
-                session_state["anim_after_id"] = None
-            session_state["anim_window"].destroy()
-            session_state["anim_window"] = None
-            session_state["anim_canvas"] = None
-            session_state["anim_frame"] = 0
-            update_match_view_label()
-            return
-        if session_state.get("phase") != "playing":
-            messagebox.showinfo("Match View", "Start a match to open the match view.")
-            return
-        start_doomguy_animation(root, session_state)
-        update_match_view_label()
+        show_tab("match")
+        if session_state.get("phase") == "playing":
+            start_doomguy_animation(root, session_state)
+        elif session_state.get("phase") == "waiting":
+            start_lobby_view(root, session_state, session_state.get("lobby_duration", 12))
+        else:
+            notify("Start a match to open the match view.")
 
-    match_view_button = tk.Button(menu_frame, text="Show Match View", width=16, command=on_toggle_match_view)
+    match_view_button = tk.Button(menu_frame, text="Match / Lobby View", width=16, command=on_toggle_match_view)
     style_button(match_view_button)
     match_view_button.pack(pady=4)
     session_state["match_view_closed_callback"] = update_match_view_label
@@ -2984,7 +3109,7 @@ def main():
         menu_frame,
         text="Achievements",
         width=16,
-        command=lambda: open_achievements_window(root, loaded_profile["data"]),
+        command=lambda: (show_tab("achievements"), open_achievements_window(tabs["achievements"], loaded_profile["data"])),
     )
     style_button(achievements_button)
     achievements_button.pack(pady=4)
@@ -2993,22 +3118,23 @@ def main():
         menu_frame,
         text="Match History",
         width=16,
-        command=lambda: open_match_history(root, loaded_profile["data"]),
+        command=lambda: (show_tab("history"), open_match_history(tabs["history"], loaded_profile["data"])),
     )
     style_button(history_button)
     history_button.pack(pady=4)
 
     def on_about():
-        messagebox.showinfo(
-            "About",
-            "Vibe coded by Jdog 1/2/2026.\nUse as inspiration to make a better Idle FPS game.",
-        )
+        notify("Vibe coded by Jdog 1/2/2026. Use as inspiration to make a better Idle FPS game.")
 
     about_button = tk.Button(menu_frame, text="About", width=16, command=on_about)
     style_button(about_button)
     about_button.pack(pady=4)
 
     def on_exit():
+        icon = tray_state.get("icon")
+        if icon:
+            icon.stop()
+            tray_state["icon"] = None
         if loaded_profile["data"] and loaded_profile["path"] and session_state.get("phase") == "playing":
             add_kill_death_stats(
                 loaded_profile["data"],
@@ -3067,7 +3193,7 @@ def main():
     style_button(exit_button, danger=True)
     exit_button.pack(pady=4)
 
-    status_frame = tk.Frame(root, bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
+    status_frame = tk.Frame(tabs["home"], bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
     status_frame.pack(padx=24, pady=(0, 14), fill="both", expand=True)
     status_header = tk.Label(
         status_frame,
@@ -3099,7 +3225,7 @@ def main():
     session_xp_label = tk.Label(status_body, textvariable=session_xp_var, font=("Segoe UI", 10), bg=THEME["panel"], fg=THEME["text"])
     session_xp_label.pack(anchor="w", pady=2)
 
-    ribbons_frame = tk.Frame(root, bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
+    ribbons_frame = tk.Frame(tabs["home"], bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
     ribbons_frame.pack(padx=24, pady=(0, 14), fill="both", expand=True)
     ribbons_header = tk.Label(
         ribbons_frame,
@@ -3197,7 +3323,13 @@ def main():
     session_state["ribbon_refresh_callback"] = update_ribbon_display
 
     root.resizable(True, True)
-    root.protocol("WM_DELETE_WINDOW", on_exit)
+    def on_close_request():
+        if pystray and Image and ImageDraw:
+            hide_to_tray()
+        else:
+            on_exit()
+
+    root.protocol("WM_DELETE_WINDOW", on_close_request)
     root.mainloop()
 
 
