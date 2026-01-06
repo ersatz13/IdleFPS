@@ -448,6 +448,19 @@ def apply_xp_and_progress(stats, xp_gain):
     stats["master_level"] = master_level
 
 
+def resync_progress_from_lifetime(stats):
+    # Rebuild level/prestige/master from lifetime XP to prevent drift.
+    lifetime_xp = int(stats.get("lifetime_xp", stats.get("xp", 0)))
+    stats["xp"] = 0
+    stats["level"] = 1
+    stats["prestige"] = 0
+    stats["prestige_unlocked"] = False
+    stats["master_prestige"] = False
+    stats["master_level"] = 1
+    apply_xp_and_progress(stats, lifetime_xp)
+    stats["lifetime_xp"] = lifetime_xp
+
+
 def progress_state(stats, xp_gain=0):
     # Preview progress without mutating stats.
     snapshot = {
@@ -3221,9 +3234,14 @@ def main():
     profile_content.pack(side="left", fill="both", expand=True)
     profile_view_state = {"active": False}
 
-    def show_profile_view():
+    def refresh_profile_view(resync=True):
         profile_view_state["active"] = True
+        if resync and loaded_profile["data"]:
+            resync_progress_from_lifetime(loaded_profile["data"]["player"]["stats"])
         view_player_profile(profile_content, loaded_profile["data"], timer_state)
+
+    def show_profile_view():
+        refresh_profile_view(resync=True)
 
     def refresh_profile_list():
         profile_list.delete(0, "end")
@@ -3248,6 +3266,7 @@ def main():
         if offline_enabled and offline_seconds >= 60:
             apply_offline_progress(data, offline_seconds)
             save_profile_data(data, Path(path))
+        resync_progress_from_lifetime(data["player"]["stats"])
         loaded_profile["data"] = data
         loaded_profile["path"] = Path(path)
         playing_as_var.set(f"Playing as: {gamertag}")
@@ -3320,7 +3339,10 @@ def main():
     style_button(create_profile_button)
     create_profile_button.pack(fill="x")
 
-    refresh_profile_button = tk.Button(profile_buttons, text="Refresh Stats", command=show_profile_view)
+    def on_refresh_profile():
+        refresh_profile_view(resync=session_state.get("phase") != "playing")
+
+    refresh_profile_button = tk.Button(profile_buttons, text="Refresh Stats", command=on_refresh_profile)
     style_button(refresh_profile_button)
     refresh_profile_button.pack(fill="x", pady=(6, 0))
     refresh_profile_button.configure(state="disabled")
@@ -3687,7 +3709,7 @@ def main():
 
     session_state["ribbon_refresh_callback"] = update_ribbon_display
     session_state["profile_refresh_callback"] = lambda: (
-        show_profile_view() if session_state.get("current_tab") == "profile" else None
+        refresh_profile_view(resync=True) if session_state.get("current_tab") == "profile" else None
     )
 
     root.resizable(True, True)
