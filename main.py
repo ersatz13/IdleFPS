@@ -2018,16 +2018,18 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
         minute = int((now - session_state["match_start"]) // 60)
         session_state["timeline"]["kills"][minute] = session_state["timeline"]["kills"].get(minute, 0) + 0
         session_state["timeline"]["headshots"][minute] = session_state["timeline"]["headshots"].get(minute, 0) + 0
-        total_xp = stats.get("xp", 0) + compute_xp_gain(
-            session_state["kills"],
-            session_state.get("headshots", 0),
-            False,
-        ) + session_state.get("xp_bonus", 0)
-        preview = progress_state(stats, total_xp - stats.get("xp", 0))
-        level = preview["level"]
-        xp_into = preview["xp_into"]
-        xp_needed = preview["xp_needed"]
-        rank = rank_display_from_progress(preview)
+        level = int(stats.get("level", 1))
+        xp_into = int(stats.get("xp", 0))
+        prestige = int(stats.get("prestige", 0))
+        master = bool(stats.get("master_prestige", False))
+        master_level = int(stats.get("master_level", 1))
+        if master:
+            xp_needed = 1_000_000
+            rank = f"Master of War {master_level}"
+        else:
+            xp_needed = level_threshold(level)
+            prefix = f"Prestige {prestige} " if prestige > 0 else ""
+            rank = f"{prefix}{rank_for_level(level)}"
         xp_var.set(f"{rank} | Level {level} | XP {xp_into}/{xp_needed}")
         session_state["ticker_id"] = root.after(1000, tick)
 
@@ -2661,11 +2663,18 @@ def view_player_profile(parent, loaded_profile, timer_state):
     longest_streak = int(stats.get("longest_kill_streak", 0))
     headshots = int(stats.get("headshots", 0))
     xp_total = int(stats.get("lifetime_xp", stats.get("xp", 0)))
-    progress = progress_state(stats)
-    level = progress["level"]
-    xp_into = progress["xp_into"]
-    xp_needed = progress["xp_needed"]
-    rank = rank_display_from_progress(progress)
+    level = int(stats.get("level", 1))
+    xp_into = int(stats.get("xp", 0))
+    prestige = int(stats.get("prestige", 0))
+    master = bool(stats.get("master_prestige", False))
+    master_level = int(stats.get("master_level", 1))
+    if master:
+        xp_needed = 1_000_000
+        rank = f"Master of War {master_level}"
+    else:
+        xp_needed = level_threshold(level)
+        prefix = f"Prestige {prestige} " if prestige > 0 else ""
+        rank = f"{prefix}{rank_for_level(level)}"
 
     window = parent
     label_style = {"bg": THEME["bg"], "fg": THEME["text"]}
