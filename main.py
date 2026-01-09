@@ -205,6 +205,9 @@ PLAYER_RANKS = (
 BASE_MAX_LEVEL = 55
 PRESTIGE_MAX = 12
 MASTER_MAX_LEVEL = 1000
+LEVEL_XP_BASE = 50
+LEVEL_XP_STEP = 25
+MASTER_LEVEL_XP = 20000
 CAMO_COLORS = {
     "None": "#3a3a3a",
     "Forest": "#2e5b2e",
@@ -360,9 +363,33 @@ def format_duration(total_seconds):
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def format_duration_weeks(total_seconds):
+    # Display elapsed time in weeks, days, and hours.
+    total_seconds = max(0, int(total_seconds))
+    total_hours = total_seconds // 3600
+    weeks = total_hours // (7 * 24)
+    days = (total_hours % (7 * 24)) // 24
+    hours = total_hours % 24
+    return f"W {weeks} D {days} H {hours}"
+
+
+def xp_to_offline_time_seconds(xp_total):
+    # Convert XP to offline time using the pacing rules.
+    xp_total = max(0, int(xp_total))
+    base_cycle = sum(level_threshold(level) for level in range(1, BASE_MAX_LEVEL + 1))
+    prestige_cycles = PRESTIGE_MAX + 1
+    xp_to_master = base_cycle * prestige_cycles
+    if xp_total <= xp_to_master:
+        hours = (xp_total / base_cycle) * 8
+    else:
+        master_xp = xp_total - xp_to_master
+        hours = 8 * prestige_cycles + (master_xp / MASTER_LEVEL_XP) * 4
+    return int(hours * 3600)
+
+
 def level_threshold(level):
     # XP needed to advance from the given level.
-    return 100 + (level - 1) * 50
+    return LEVEL_XP_BASE + (level - 1) * LEVEL_XP_STEP
 
 
 def level_progress(xp_total):
@@ -392,9 +419,9 @@ def level_progress_with_cap(xp_total, level_cap):
 def master_level_progress_with_cap(xp_total, level_cap):
     # Master prestige uses a flat XP requirement per level.
     xp_total = max(0, int(xp_total))
-    level = min(level_cap, 1 + xp_total // 1_000_000)
-    remaining = xp_total % 1_000_000
-    threshold = 1_000_000
+    level = min(level_cap, 1 + xp_total // MASTER_LEVEL_XP)
+    remaining = xp_total % MASTER_LEVEL_XP
+    threshold = MASTER_LEVEL_XP
     return level, remaining, threshold
 
 
@@ -408,7 +435,7 @@ def master_prestige_required_xp():
     # Total lifetime XP required to reach Master Prestige 1000.
     base_cycle = sum(level_threshold(level) for level in range(1, BASE_MAX_LEVEL + 1))
     xp_to_master = base_cycle * (PRESTIGE_MAX + 1)
-    xp_master = (MASTER_MAX_LEVEL - 1) * 1_000_000
+    xp_master = (MASTER_MAX_LEVEL - 1) * MASTER_LEVEL_XP
     return xp_to_master + xp_master
 
 
@@ -423,7 +450,7 @@ def apply_xp_and_progress(stats, xp_gain):
 
     while True:
         if master:
-            threshold = 1_000_000
+            threshold = MASTER_LEVEL_XP
             if xp < threshold or master_level >= MASTER_MAX_LEVEL:
                 break
             xp -= threshold
@@ -486,7 +513,7 @@ def progress_state(stats, xp_gain=0):
         return {
             "level": int(snapshot.get("level", 1)),
             "xp_into": int(snapshot.get("xp", 0)),
-            "xp_needed": 1_000_000,
+            "xp_needed": MASTER_LEVEL_XP,
             "prestige": int(snapshot.get("prestige", 0)),
             "master": True,
             "master_level": int(snapshot.get("master_level", 1)),
@@ -1942,7 +1969,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
             master = bool(stats.get("master_prestige", False))
             master_level = int(stats.get("master_level", 1))
             if master:
-                xp_needed = 1_000_000
+                xp_needed = MASTER_LEVEL_XP
                 rank = f"Master of War {master_level}"
             else:
                 xp_needed = level_threshold(level)
@@ -2067,7 +2094,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
         master = bool(stats.get("master_prestige", False))
         master_level = int(stats.get("master_level", 1))
         if master:
-            xp_needed = 1_000_000
+            xp_needed = MASTER_LEVEL_XP
             rank = f"Master of War {master_level}"
         else:
             xp_needed = level_threshold(level)
@@ -2552,6 +2579,262 @@ def open_match_history(parent, loaded_profile):
         label.pack(side="left")
 
 
+def leaderboard_rank_from_xp(xp_total):
+    # Map lifetime XP to a global leaderboard rank.
+    xp = max(0, int(xp_total))
+    rank = 440_000
+    segments = [
+        (rank - 80_000, 200),
+        (80_000 - 10_000, 800),
+        (10_000 - 100, 2000),
+        (100 - 1, 5000),
+    ]
+    for ranks_available, xp_per_rank in segments:
+        if xp <= 0 or rank <= 1:
+            break
+        gain = min(ranks_available, xp // xp_per_rank)
+        if gain <= 0:
+            break
+        rank -= gain
+        xp -= gain * xp_per_rank
+    return max(1, int(rank))
+
+
+def leaderboard_rank_label_from_xp(xp_total):
+    # Resolve prestige/master label for a given lifetime XP total.
+    snapshot = {
+        "xp": 0,
+        "level": 1,
+        "prestige": 0,
+        "prestige_unlocked": False,
+        "master_prestige": False,
+        "master_level": 1,
+    }
+    apply_xp_and_progress(snapshot, int(xp_total))
+    if snapshot.get("master_prestige"):
+        return f"Master of War {int(snapshot.get('master_level', 1))}"
+    return f"Prestige {int(snapshot.get('prestige', 0))}"
+
+
+def generate_global_leaderboard():
+    # Build a deterministic top-100 leaderboard.
+    rng = random.Random(2026)
+    english = [
+        "Blaze", "Falcon", "Wraith", "Nova", "Rogue", "Saber", "Havoc", "Ghost", "Viper", "Titan",
+        "Ranger", "Pulse", "Atlas", "Echo", "Phantom", "Onyx", "Maverick", "Specter", "Raptor", "Vector",
+    ]
+    spanish = [
+        "Lobo", "Sombra", "Relampago", "Fuego", "Luna", "Tigre", "Veneno", "Rayo", "Aguja", "Cazador",
+        "Relampago", "Tormenta", "Cobra", "Guerrero", "Pistola", "Rastro", "Furia", "Cemento",
+    ]
+    japanese = [
+        "Kitsune", "Kage", "Yami", "Tora", "Raijin", "Shinobi", "Rai", "Hoshi", "Kumo", "Sora",
+        "Akira", "Takumi", "Yoru", "Kurenai", "Mori", "Tenshi", "Rikku", "Kenji",
+    ]
+    russian = [
+        "Volk", "Zarya", "Vostok", "Kobra", "Medved", "Buran", "Vega", "Tundra", "Sokol", "Ruslan",
+        "Boris", "Kosmos", "Zimniy", "Frost", "Orion", "Vityaz", "Drakon", "Rusalka",
+    ]
+    funny = [
+        "NoScopePotato", "LagWizard", "MomReloaded", "AFKLegend", "KeyboardWarrior", "NaptimeNinja",
+        "PingPanda", "ZeroRecoil", "SnackBandit", "SausageKing", "TacoTitan", "CheeseDealer",
+    ]
+    bases = english + spanish + japanese + russian + funny
+    prefixes = ["xX", "Xx", "XX", "Q_", "Z_", "iAm", "Mr", "Its", "The", "Lil", "Big", "OG", "Dr"]
+    suffixes = ["", "_GG", "_XD", "_TV", "69", "420", "_v2", "__", "!!", "_pro", "Jr"]
+    leet = str.maketrans({"a": "4", "e": "3", "i": "1", "o": "0", "s": "5", "t": "7"})
+
+    def random_case(tag):
+        return "".join(ch.upper() if rng.random() < 0.45 else ch.lower() for ch in tag)
+
+    names = {"JustJDoggin"}
+    leaderboard = [{"name": "JustJDoggin", "score": 16_420_069}]
+    score = 16_420_069
+    while len(leaderboard) < 100:
+        base = rng.choice(bases)
+        tag = base
+        if rng.random() < 0.55:
+            tag = f"{tag}{rng.randint(0, 999)}"
+        if rng.random() < 0.45:
+            tag = f"{rng.choice(prefixes)}{tag}"
+        if rng.random() < 0.45:
+            tag = f"{tag}{rng.choice(suffixes)}"
+        if rng.random() < 0.3:
+            tag = random_case(tag)
+        if rng.random() < 0.25:
+            tag = tag.translate(leet)
+        tag = tag.strip()
+        if tag in names or len(tag) < 3:
+            continue
+        names.add(tag)
+        if len(leaderboard) < 10:
+            drop = rng.uniform(0.01, 0.012)
+        else:
+            drop = rng.uniform(0.01, 0.02)
+        score = int(score * (1 - drop))
+        leaderboard.append({"name": tag, "score": score})
+    return leaderboard
+
+
+def open_leaderboard_window(parent, loaded_profile):
+    # Display the global leaderboard and the player's rank.
+    clear_frame(parent)
+    window = parent
+    window.configure(bg=THEME["bg"])
+
+    header = tk.Label(window, text="Global Leaderboard", font=("Segoe UI", 12, "bold"), bg=THEME["bg"], fg=THEME["text"])
+    header.pack(padx=16, pady=(16, 6))
+
+    hint = tk.Label(
+        window,
+        text="Top 100 are shown. Your ranking updates as lifetime XP grows.",
+        font=("Segoe UI", 9),
+        bg=THEME["bg"],
+        fg=THEME["muted"],
+    )
+    hint.pack(padx=16, pady=(0, 10))
+
+    list_body = tk.Frame(window, bg=THEME["bg"])
+    list_body.pack(padx=16, pady=(0, 10), fill="both", expand=True)
+    canvas = tk.Canvas(list_body, bg=THEME["bg"], highlightthickness=0)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar = tk.Scrollbar(list_body, orient="vertical", command=canvas.yview)
+    scrollbar.pack(side="right", fill="y")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    list_frame = tk.Frame(canvas, bg=THEME["bg"])
+    canvas.create_window((0, 0), window=list_frame, anchor="nw", tags="content")
+
+    def update_scrollregion(_event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    list_frame.bind("<Configure>", update_scrollregion)
+
+    def on_canvas_configure(event):
+        canvas.itemconfigure("content", width=event.width)
+
+    canvas.bind("<Configure>", on_canvas_configure)
+
+    leaderboard = generate_global_leaderboard()
+    player_name = None
+    player_score = None
+    player_rank = None
+    player_kills = None
+    player_rank_label = None
+    player_time_seconds = None
+    if loaded_profile:
+        stats = ensure_stats(loaded_profile)
+        player_name = loaded_profile.get("player", {}).get("gamertag", "Player")
+        player_score = int(stats.get("lifetime_xp", stats.get("xp", 0)))
+        player_rank = leaderboard_rank_from_xp(player_score)
+        player_kills = int(stats.get("kills", 0))
+        player_rank_label = leaderboard_rank_label_from_xp(player_score)
+        player_time_seconds = xp_to_offline_time_seconds(player_score)
+    display_entries = list(leaderboard)
+    if player_rank is not None and 1 <= player_rank <= len(display_entries):
+        display_entries[player_rank - 1] = {
+            "name": f"{player_name} (You)",
+            "score": player_score,
+            "is_player": True,
+        }
+
+    master_name_labels = []
+    for idx, entry in enumerate(display_entries, start=1):
+        row = tk.Frame(list_frame, bg=THEME["bg"])
+        row.pack(fill="x", pady=2)
+        entry_rank_label = leaderboard_rank_label_from_xp(entry.get("score", 0))
+        rank_label = tk.Label(row, text=f"{idx:>3}", width=4, anchor="e", bg=THEME["bg"], fg=THEME["muted"])
+        rank_label.pack(side="left")
+        name_color = THEME["accent"] if entry.get("is_player") else THEME["text"]
+        name_label = tk.Label(row, text=entry.get("name", "Unknown"), width=22, anchor="w", bg=THEME["bg"], fg=name_color)
+        name_label.pack(side="left", padx=(6, 0))
+        if entry_rank_label == "Master of War 1000":
+            master_name_labels.append(name_label)
+        rank_label = tk.Label(
+            row,
+            text=entry_rank_label,
+            width=18,
+            anchor="w",
+            bg=THEME["bg"],
+            fg=THEME["muted"],
+        )
+        rank_label.pack(side="left", padx=(6, 0))
+        score = int(entry.get("score", 0))
+        time_seconds = xp_to_offline_time_seconds(score)
+        time_label = tk.Label(
+            row,
+            text=format_duration_weeks(time_seconds),
+            width=10,
+            anchor="w",
+            bg=THEME["bg"],
+            fg=THEME["muted"],
+        )
+        time_label.pack(side="left", padx=(6, 0))
+        score_label = tk.Label(
+            row,
+            text=f"{int(entry.get('score', 0)):,}",
+            anchor="e",
+            bg=THEME["bg"],
+            fg=THEME["text"],
+        )
+        score_label.pack(side="right")
+
+    if master_name_labels:
+        anim_state = {"index": 0}
+        anim_colors = ["#ff5f6d", "#ffc371", "#7dffb8", "#7fc7ff", "#c77dff"]
+        anim_offsets = [0, 1, 2, 3, 2, 1]
+
+        def animate_master_names():
+            live_labels = [label for label in master_name_labels if label.winfo_exists()]
+            if not live_labels:
+                return
+            color = anim_colors[anim_state["index"] % len(anim_colors)]
+            offset = anim_offsets[anim_state["index"] % len(anim_offsets)]
+            anim_state["index"] += 1
+            jitter = 1 if anim_state["index"] % 2 == 0 else 3
+            for label in live_labels:
+                label.configure(fg=color, padx=jitter)
+                label.pack_configure(pady=(offset, 0))
+            window.after(140, animate_master_names)
+
+        animate_master_names()
+
+    footer = tk.Frame(window, bg=THEME["panel"], highlightbackground=THEME["panel_edge"], highlightthickness=1)
+    footer.pack(padx=16, pady=(0, 16), fill="x")
+    footer_label = tk.Label(
+        footer,
+        text="Your Rank",
+        font=("Segoe UI", 10, "bold"),
+        bg=THEME["panel"],
+        fg=THEME["accent"],
+    )
+    footer_label.pack(anchor="w", padx=12, pady=(8, 4))
+    if player_rank is None:
+        status = tk.Label(
+            footer,
+            text="Load a player profile to see your ranking.",
+            font=("Segoe UI", 9),
+            bg=THEME["panel"],
+            fg=THEME["muted"],
+        )
+        status.pack(anchor="w", padx=12, pady=(0, 8))
+    else:
+        if player_score and player_time_seconds is not None and player_time_seconds > 0:
+            player_time_display = format_duration_weeks(player_time_seconds)
+        else:
+            player_time_display = "--:--:--"
+        status = tk.Label(
+            footer,
+            text=(
+                f"Rank {player_rank:,} | {player_name} | XP {player_score:,} | "
+                f"Kills {player_kills:,} | {player_rank_label} | Time {player_time_display}"
+            ),
+            font=("Segoe UI", 10),
+            bg=THEME["panel"],
+            fg=THEME["text"],
+        )
+        status.pack(anchor="w", padx=12, pady=(0, 8))
+
+
 def open_achievements_window(parent, loaded_profile):
     # Display achievements with progress bars.
     clear_frame(parent)
@@ -2864,7 +3147,7 @@ def view_player_profile(parent, loaded_profile, timer_state):
     master = bool(stats.get("master_prestige", False))
     master_level = int(stats.get("master_level", 1))
     if master:
-        xp_needed = 1_000_000
+        xp_needed = MASTER_LEVEL_XP
         rank = f"Master of War {master_level}"
     else:
         xp_needed = level_threshold(level)
@@ -3266,6 +3549,7 @@ def main():
         "profile": tk.Frame(notebook, bg=THEME["bg"]),
         "loadout": tk.Frame(notebook, bg=THEME["bg"]),
         "options": tk.Frame(notebook, bg=THEME["bg"]),
+        "leaderboard": tk.Frame(notebook, bg=THEME["bg"]),
         "achievements": tk.Frame(notebook, bg=THEME["bg"]),
         "history": tk.Frame(notebook, bg=THEME["bg"]),
         "summaries": tk.Frame(notebook, bg=THEME["bg"]),
@@ -3275,6 +3559,7 @@ def main():
     notebook.add(tabs["profile"], text="Profile")
     notebook.add(tabs["loadout"], text="Loadout")
     notebook.add(tabs["options"], text="Options")
+    notebook.add(tabs["leaderboard"], text="Leaderboard")
     notebook.add(tabs["achievements"], text="Achievements")
     notebook.add(tabs["history"], text="History")
     notebook.add(tabs["summaries"], text="Summaries")
@@ -3289,6 +3574,9 @@ def main():
         if selected == str(tabs["options"]):
             session_state["current_tab"] = "options"
             on_options(tabs["options"], loaded_profile["data"], loaded_profile["path"], session_state)
+        elif selected == str(tabs["leaderboard"]):
+            session_state["current_tab"] = "leaderboard"
+            open_leaderboard_window(tabs["leaderboard"], loaded_profile["data"])
         elif selected == str(tabs["achievements"]):
             session_state["current_tab"] = "achievements"
             open_achievements_window(tabs["achievements"], loaded_profile["data"])
