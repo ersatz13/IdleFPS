@@ -1007,7 +1007,7 @@ def award_weapon_xp(loaded_profile, weapon_name, xp_gain, headshots=0, kills=0):
 
 
 def trigger_nuke(session_state, stats, now, schedule_end, force=False):
-    # Trigger a nuclear victory and end the match shortly after.
+    # Trigger a nuclear victory and optionally end the match shortly after.
     if "nuke" in session_state.get("reward_flags", set()) and not force and not session_state.get("pending_nuke"):
         return
     session_state["streak_rewards"]["nuke"] = now
@@ -1029,8 +1029,10 @@ def trigger_nuke(session_state, stats, now, schedule_end, force=False):
     for _ in range(6):
         if targets:
             random.choice(targets)["deaths"] += 1
-    session_state["end_time"] = session_state["nuke_until"]
-    schedule_end(int((session_state["nuke_until"] - now) * 1000))
+    if session_state.get("nuke_ends_match"):
+        session_state["end_time"] = session_state["nuke_until"]
+        if schedule_end:
+            schedule_end(int((session_state["nuke_until"] - now) * 1000))
 
 
 def close_nuke_prompt(session_state):
@@ -1586,6 +1588,7 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
     session_state["schedule_end"] = None
     session_state["nuke_prompt"] = None
     session_state["pending_nuke"] = False
+    session_state["nuke_ends_match"] = True
     session_state["match_start"] = time.monotonic()
     session_state["timeline"] = {
         "kills": {},
@@ -2183,166 +2186,220 @@ def on_options(parent, loaded_profile, save_path, session_state):
     )
     offline_toggle.pack(side="left")
 
-    debug_header = tk.Label(window, text="Debug Controls", font=("Segoe UI", 10), bg=THEME["bg"], fg=THEME["accent"])
-    debug_header.pack(padx=24, pady=(14, 6))
-
-    def on_end_match():
-        if session_state.get("phase") != "playing":
-            notify("No active match to end.")
-            return
-        end_match = session_state.get("end_match")
-        if not end_match:
-            notify("Match end handler is not available yet.")
-            return
-        end_match()
-
-    end_match_button = tk.Button(window, text="End Current Match", width=20, command=on_end_match)
-    end_match_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
-    end_match_button.pack(padx=24, pady=(0, 10))
-
-    super_speed_toggle = tk.Checkbutton(
-        window,
-        text="Super Speed (5x)",
-        variable=super_speed_var,
-        bg=THEME["bg"],
-        fg=THEME["text"],
-        selectcolor=THEME["panel"],
-        activebackground=THEME["bg"],
-        activeforeground=THEME["text"],
-    )
-    super_speed_toggle.pack(padx=24, pady=(0, 10))
-
-    def on_master_prestige():
-        stats = ensure_stats(loaded_profile)
-        stats["lifetime_xp"] = master_prestige_required_xp()
-        resync_progress_from_lifetime(stats)
-        save_profile_data(loaded_profile, save_path)
-        notify("Set to Master Prestige 1000.")
-        view_player_profile(window, loaded_profile, timer_state)
-
-    master_button = tk.Button(window, text="Jump to Master Prestige 1000", width=28, command=on_master_prestige)
-    master_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
-    master_button.pack(padx=24, pady=(0, 10))
-
-    def on_unlock_singularity():
-        stats = ensure_stats(loaded_profile)
-        weapons = stats.setdefault("weapons", {})
-        for weapon in WEAPON_POOL:
-            weapon_stats = weapons.setdefault(
-                weapon,
-                {"xp": 0, "level": 1, "headshots": 0, "camo": "None", "kills": 0},
-            )
-            weapon_stats["headshots"] = max(int(weapon_stats.get("headshots", 0)), 1000)
-            weapon_stats["camo"] = "Singularity"
-        save_profile_data(loaded_profile, save_path)
-        notify("Unlocked Singularity camo for all weapons.")
-        view_player_profile(window, loaded_profile, {"elapsed": 0, "start": 0.0, "running": False})
-
-    singularity_button = tk.Button(window, text="Unlock Singularity Camo (All Guns)", width=32, command=on_unlock_singularity)
-    singularity_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
-    singularity_button.pack(padx=24, pady=(0, 10))
-
-    def on_unlock_all_ribbons():
-        stats = ensure_stats(loaded_profile)
-        earned = stats.setdefault("achievements", {})
-        for entry in ACHIEVEMENTS:
-            earned[entry[0]] = True
-        save_profile_data(loaded_profile, save_path)
-        notify("Unlocked all achievement ribbons.")
-
-    ribbon_button = tk.Button(window, text="Unlock All Ribbons", width=24, command=on_unlock_all_ribbons)
-    ribbon_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
-    ribbon_button.pack(padx=24, pady=(0, 10))
-
-    def on_add_kills():
-        stats = ensure_stats(loaded_profile)
-        stats["kills"] = int(stats.get("kills", 0)) + 1000
-        defaults = loaded_profile["player"].get("defaults", {})
-        weapon_name = defaults.get("weapon", WEAPON_POOL[0])
-        weapons = stats.setdefault("weapons", {})
-        weapon_stats = weapons.setdefault(
-            weapon_name,
-            {"xp": 0, "level": 1, "headshots": 0, "camo": "None", "kills": 0},
-        )
-        weapon_stats["kills"] = int(weapon_stats.get("kills", 0)) + 1000
-        save_profile_data(loaded_profile, save_path)
-        notify("Added 1000 kills.")
-
-    add_kills_button = tk.Button(window, text="Add 1000 Kills", width=24, command=on_add_kills)
-    add_kills_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
-    add_kills_button.pack(padx=24, pady=(0, 10))
-
     save_button = tk.Button(window, text="Save Options", width=18, command=on_save)
     save_button.configure(bg=THEME["primary"], fg="#f5f7fb", activebackground=THEME["primary_hover"])
     save_button.pack(padx=24, pady=(12, 18))
+    debug_frame = tk.Frame(window, bg=THEME["bg"])
+    debug_unlocked = bool(session_state.get("debug_unlocked", False))
 
-    debug_container = tk.Frame(window, bg=THEME["bg"], height=32)
-    debug_container.pack(padx=24, pady=(0, 16), fill="x")
-    debug_text = tk.Label(debug_container, text="Singularity debug text", font=("Segoe UI", 10), bg=THEME["bg"])
-    debug_text.place(relx=0.5, y=8, anchor="n")
+    def build_debug_controls(container):
+        debug_header = tk.Label(
+            container,
+            text="Debug Controls",
+            font=("Segoe UI", 10),
+            bg=THEME["bg"],
+            fg=THEME["accent"],
+        )
+        debug_header.pack(padx=24, pady=(14, 6))
 
-    debug_anim = {"index": 0}
-    debug_colors = ["#ff5f6d", "#ffc371", "#7dffb8", "#7fc7ff", "#c77dff"]
-    debug_offsets = [0, 1, 2, 3, 4, 3, 2, 1]
+        def on_end_match():
+            if session_state.get("phase") != "playing":
+                notify("No active match to end.")
+                return
+            end_match = session_state.get("end_match")
+            if not end_match:
+                notify("Match end handler is not available yet.")
+                return
+            end_match()
 
-    def animate_debug_text():
-        if not debug_text.winfo_exists():
-            return
-        color = debug_colors[debug_anim["index"] % len(debug_colors)]
-        offset = debug_offsets[debug_anim["index"] % len(debug_offsets)]
-        debug_anim["index"] += 1
-        jitter = 1 if debug_anim["index"] % 2 == 0 else 3
-        debug_text.configure(fg=color, padx=jitter)
-        debug_text.place_configure(y=8 + offset)
-        window.after(250, animate_debug_text)
+        end_match_button = tk.Button(container, text="End Current Match", width=20, command=on_end_match)
+        end_match_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
+        end_match_button.pack(padx=24, pady=(0, 10))
 
-    animate_debug_text()
+        super_speed_toggle = tk.Checkbutton(
+            container,
+            text="Super Speed (5x)",
+            variable=super_speed_var,
+            bg=THEME["bg"],
+            fg=THEME["text"],
+            selectcolor=THEME["panel"],
+            activebackground=THEME["bg"],
+            activeforeground=THEME["text"],
+        )
+        super_speed_toggle.pack(padx=24, pady=(0, 10))
 
-    master_container = tk.Frame(window, bg=THEME["bg"], height=34)
-    master_container.pack(padx=24, pady=(0, 16), fill="x")
-    master_font = tkfont.Font(family="Segoe UI", size=10)
-    master_canvas = tk.Canvas(master_container, height=20, bg=THEME["bg"], highlightthickness=0)
-    master_canvas.pack()
-    master_text = "Master Prestige 1000"
-    base_y = 10
-    master_items = []
-    cursor_x = 0
-    for ch in master_text:
-        width = master_font.measure(ch)
-        x_pos = cursor_x + width / 2
-        item = master_canvas.create_text(x_pos, base_y, text=ch, font=master_font, fill=THEME["text"])
-        master_items.append({"item": item, "char": ch, "x": x_pos})
-        cursor_x += width
-    master_canvas.configure(width=max(180, int(cursor_x)))
+        def on_master_prestige():
+            stats = ensure_stats(loaded_profile)
+            stats["lifetime_xp"] = master_prestige_required_xp()
+            resync_progress_from_lifetime(stats)
+            save_profile_data(loaded_profile, save_path)
+            notify("Set to Master Prestige 1000.")
+            view_player_profile(window, loaded_profile, timer_state)
 
-    master_state = {"index": 0, "frame": 0}
-    master_spin = ["-", "\\", "|", "/"]
-    master_colors = ["#ff5f6d", "#ffc371", "#7dffb8", "#7fc7ff", "#c77dff"]
+        master_button = tk.Button(container, text="Jump to Master Prestige 1000", width=28, command=on_master_prestige)
+        master_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
+        master_button.pack(padx=24, pady=(0, 10))
 
-    def animate_master_debug():
-        if not master_canvas.winfo_exists():
-            return
-        color = master_colors[master_state["frame"] % len(master_colors)]
-        for entry in master_items:
-            master_canvas.itemconfig(entry["item"], fill=color, text=entry["char"])
-            master_canvas.coords(entry["item"], entry["x"], base_y)
-        if master_items:
-            letter_index = master_state["index"] % len(master_items)
-            for _ in range(len(master_items)):
-                if master_items[letter_index]["char"] != " ":
-                    break
-                letter_index = (letter_index + 1) % len(master_items)
-            spin_char = master_spin[master_state["frame"] % len(master_spin)]
-            offset = 3 if master_state["frame"] % 2 == 0 else -3
-            entry = master_items[letter_index]
-            master_canvas.itemconfig(entry["item"], text=spin_char)
-            master_canvas.coords(entry["item"], entry["x"], base_y + offset)
-        master_state["frame"] += 1
-        if master_state["frame"] % len(master_spin) == 0:
-            master_state["index"] += 1
-        window.after(120, animate_master_debug)
+        def on_unlock_singularity():
+            stats = ensure_stats(loaded_profile)
+            weapons = stats.setdefault("weapons", {})
+            for weapon in WEAPON_POOL:
+                weapon_stats = weapons.setdefault(
+                    weapon,
+                    {"xp": 0, "level": 1, "headshots": 0, "camo": "None", "kills": 0},
+                )
+                weapon_stats["headshots"] = max(int(weapon_stats.get("headshots", 0)), 1000)
+                weapon_stats["camo"] = "Singularity"
+            save_profile_data(loaded_profile, save_path)
+            notify("Unlocked Singularity camo for all weapons.")
+            view_player_profile(window, loaded_profile, {"elapsed": 0, "start": 0.0, "running": False})
 
-    animate_master_debug()
+        singularity_button = tk.Button(
+            container,
+            text="Unlock Singularity Camo (All Guns)",
+            width=32,
+            command=on_unlock_singularity,
+        )
+        singularity_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
+        singularity_button.pack(padx=24, pady=(0, 10))
+
+        def on_unlock_all_ribbons():
+            stats = ensure_stats(loaded_profile)
+            earned = stats.setdefault("achievements", {})
+            for entry in ACHIEVEMENTS:
+                earned[entry[0]] = True
+            save_profile_data(loaded_profile, save_path)
+            notify("Unlocked all achievement ribbons.")
+
+        ribbon_button = tk.Button(container, text="Unlock All Ribbons", width=24, command=on_unlock_all_ribbons)
+        ribbon_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
+        ribbon_button.pack(padx=24, pady=(0, 10))
+
+        def on_add_kills():
+            stats = ensure_stats(loaded_profile)
+            stats["kills"] = int(stats.get("kills", 0)) + 1000
+            defaults = loaded_profile["player"].get("defaults", {})
+            weapon_name = defaults.get("weapon", WEAPON_POOL[0])
+            weapons = stats.setdefault("weapons", {})
+            weapon_stats = weapons.setdefault(
+                weapon_name,
+                {"xp": 0, "level": 1, "headshots": 0, "camo": "None", "kills": 0},
+            )
+            weapon_stats["kills"] = int(weapon_stats.get("kills", 0)) + 1000
+            save_profile_data(loaded_profile, save_path)
+            notify("Added 1000 kills.")
+
+        add_kills_button = tk.Button(container, text="Add 1000 Kills", width=24, command=on_add_kills)
+        add_kills_button.configure(bg=THEME["button"], fg=THEME["text"], activebackground=THEME["button_hover"])
+        add_kills_button.pack(padx=24, pady=(0, 10))
+
+        debug_container = tk.Frame(container, bg=THEME["bg"], height=32)
+        debug_container.pack(padx=24, pady=(0, 16), fill="x")
+        debug_text = tk.Label(debug_container, text="Singularity debug text", font=("Segoe UI", 10), bg=THEME["bg"])
+        debug_text.place(relx=0.5, y=8, anchor="n")
+
+        debug_anim = {"index": 0}
+        debug_colors = ["#ff5f6d", "#ffc371", "#7dffb8", "#7fc7ff", "#c77dff"]
+        debug_offsets = [0, 1, 2, 3, 4, 3, 2, 1]
+
+        def animate_debug_text():
+            if not debug_text.winfo_exists():
+                return
+            color = debug_colors[debug_anim["index"] % len(debug_colors)]
+            offset = debug_offsets[debug_anim["index"] % len(debug_offsets)]
+            debug_anim["index"] += 1
+            jitter = 1 if debug_anim["index"] % 2 == 0 else 3
+            debug_text.configure(fg=color, padx=jitter)
+            debug_text.place_configure(y=8 + offset)
+            window.after(250, animate_debug_text)
+
+        animate_debug_text()
+
+        master_container = tk.Frame(container, bg=THEME["bg"], height=34)
+        master_container.pack(padx=24, pady=(0, 16), fill="x")
+        master_font = tkfont.Font(family="Segoe UI", size=10)
+        master_canvas = tk.Canvas(master_container, height=20, bg=THEME["bg"], highlightthickness=0)
+        master_canvas.pack()
+        master_text = "Master Prestige 1000"
+        base_y = 10
+        master_items = []
+        cursor_x = 0
+        for ch in master_text:
+            width = master_font.measure(ch)
+            x_pos = cursor_x + width / 2
+            item = master_canvas.create_text(x_pos, base_y, text=ch, font=master_font, fill=THEME["text"])
+            master_items.append({"item": item, "char": ch, "x": x_pos})
+            cursor_x += width
+        master_canvas.configure(width=max(180, int(cursor_x)))
+
+        master_state = {"index": 0, "frame": 0}
+        master_spin = ["-", "\\", "|", "/"]
+        master_colors = ["#ff5f6d", "#ffc371", "#7dffb8", "#7fc7ff", "#c77dff"]
+
+        def animate_master_debug():
+            if not master_canvas.winfo_exists():
+                return
+            color = master_colors[master_state["frame"] % len(master_colors)]
+            for entry in master_items:
+                master_canvas.itemconfig(entry["item"], fill=color, text=entry["char"])
+                master_canvas.coords(entry["item"], entry["x"], base_y)
+            if master_items:
+                letter_index = master_state["index"] % len(master_items)
+                for _ in range(len(master_items)):
+                    if master_items[letter_index]["char"] != " ":
+                        break
+                    letter_index = (letter_index + 1) % len(master_items)
+                spin_char = master_spin[master_state["frame"] % len(master_spin)]
+                offset = 3 if master_state["frame"] % 2 == 0 else -3
+                entry = master_items[letter_index]
+                master_canvas.itemconfig(entry["item"], text=spin_char)
+                master_canvas.coords(entry["item"], entry["x"], base_y + offset)
+            master_state["frame"] += 1
+            if master_state["frame"] % len(master_spin) == 0:
+                master_state["index"] += 1
+            window.after(120, animate_master_debug)
+
+        animate_master_debug()
+
+    if debug_unlocked:
+        build_debug_controls(debug_frame)
+        debug_frame.pack(fill="x")
+    else:
+        key_buffer = {"value": ""}
+        session_state["debug_listener_active"] = True
+        expire_id = session_state.get("debug_listener_after_id")
+        if expire_id:
+            try:
+                window.after_cancel(expire_id)
+            except Exception:
+                pass
+
+        def expire_debug_listener():
+            session_state["debug_listener_active"] = False
+            key_buffer["value"] = ""
+
+        session_state["debug_listener_after_id"] = window.after(10000, expire_debug_listener)
+
+        def on_key(event):
+            if session_state.get("debug_unlocked"):
+                return
+            if session_state.get("current_tab") != "options":
+                return
+            if not session_state.get("debug_listener_active"):
+                return
+            char = event.char
+            if not char or not char.isalpha():
+                return
+            key_buffer["value"] = (key_buffer["value"] + char.lower())[-7:]
+            if key_buffer["value"].endswith("doritos"):
+                session_state["debug_unlocked"] = True
+                session_state["debug_listener_active"] = False
+                build_debug_controls(debug_frame)
+                debug_frame.pack(fill="x")
+        if not session_state.get("debug_bind_active"):
+            session_state["debug_bind_active"] = True
+            window.bind_all("<Key>", on_key)
+        window.focus_set()
 
 
 
@@ -2440,7 +2497,7 @@ def open_match_summary(summary, session_state):
 
 
 def open_match_history(parent, loaded_profile):
-    # Show the last 10 match summaries.
+    # Show the last 50 match summaries with scroll support.
     clear_frame(parent)
     if not loaded_profile:
         tk.Label(parent, text="Load a player profile to view match history.", font=("Segoe UI", 10)).pack(
@@ -2452,26 +2509,46 @@ def open_match_history(parent, loaded_profile):
     history = stats.get("match_history", [])
 
     window = parent
-    frame = tk.Frame(window)
+    frame = tk.Frame(window, bg=THEME["bg"])
     frame.pack(padx=16, pady=16, fill="both", expand=True)
 
-    header = tk.Label(frame, text="Last 10 Matches", font=("Segoe UI", 12))
+    header = tk.Label(frame, text="Last 50 Matches", font=("Segoe UI", 12), bg=THEME["bg"], fg=THEME["text"])
     header.pack(pady=(0, 10))
 
     if not history:
-        empty = tk.Label(frame, text="No matches recorded yet.", font=("Segoe UI", 10))
+        empty = tk.Label(frame, text="No matches recorded yet.", font=("Segoe UI", 10), bg=THEME["bg"], fg=THEME["muted"])
         empty.pack()
         return
 
-    for entry in history[:10]:
-        row = tk.Frame(frame)
+    list_body = tk.Frame(frame, bg=THEME["bg"])
+    list_body.pack(fill="both", expand=True)
+    canvas = tk.Canvas(list_body, bg=THEME["bg"], highlightthickness=0)
+    canvas.pack(side="left", fill="both", expand=True)
+    scrollbar = tk.Scrollbar(list_body, orient="vertical", command=canvas.yview)
+    scrollbar.pack(side="right", fill="y")
+    canvas.configure(yscrollcommand=scrollbar.set)
+    list_frame = tk.Frame(canvas, bg=THEME["bg"])
+    canvas.create_window((0, 0), window=list_frame, anchor="nw", tags="content")
+
+    def update_scrollregion(_event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    list_frame.bind("<Configure>", update_scrollregion)
+
+    def on_canvas_configure(event):
+        canvas.itemconfigure("content", width=event.width)
+
+    canvas.bind("<Configure>", on_canvas_configure)
+
+    for entry in history[:50]:
+        row = tk.Frame(list_frame, bg=THEME["bg"])
         row.pack(fill="x", pady=2)
         text = (
             f"{entry.get('mode', 'TDM')} | {entry.get('map', 'Unknown')} | "
             f"K {entry.get('kills', 0)} D {entry.get('deaths', 0)} HS {entry.get('headshots', 0)} | "
             f"XP {entry.get('xp_total', 0)}"
         )
-        label = tk.Label(row, text=text, anchor="w", font=("Segoe UI", 9))
+        label = tk.Label(row, text=text, anchor="w", font=("Segoe UI", 9), bg=THEME["bg"], fg=THEME["text"])
         label.pack(side="left")
 
 
@@ -3046,6 +3123,16 @@ def open_game_setup_window(
 ):
     # Allow the player to pick default weapon and game mode for this profile.
     clear_frame(parent)
+    if not loaded_profile or not save_path:
+        notify("Load a player profile to edit the loadout.")
+        tk.Label(
+            parent,
+            text="Load a player profile to edit the loadout.",
+            font=("Segoe UI", 10),
+            bg=THEME["bg"],
+            fg=THEME["muted"],
+        ).pack(padx=24, pady=24)
+        return
     player = loaded_profile["player"]
     defaults = player.get("defaults", {})
 
@@ -3133,7 +3220,12 @@ def open_game_setup_window(
         persist_defaults()
         notify("Loadout saved.")
         if timer_state is not None:
-            view_player_profile(window, loaded_profile, timer_state)
+            show_tab = session_state.get("show_tab")
+            profile_view = session_state.get("profile_view_callback")
+            if show_tab:
+                show_tab("profile")
+            if profile_view:
+                profile_view()
 
     quick_button = tk.Button(window, text="Quick Start", width=22, command=on_quick_start)
     quick_button.pack(pady=(6, 6))
@@ -3172,6 +3264,7 @@ def main():
     tabs = {
         "home": tk.Frame(notebook, bg=THEME["bg"]),
         "profile": tk.Frame(notebook, bg=THEME["bg"]),
+        "loadout": tk.Frame(notebook, bg=THEME["bg"]),
         "options": tk.Frame(notebook, bg=THEME["bg"]),
         "achievements": tk.Frame(notebook, bg=THEME["bg"]),
         "history": tk.Frame(notebook, bg=THEME["bg"]),
@@ -3180,6 +3273,7 @@ def main():
     }
     notebook.add(tabs["home"], text="Home")
     notebook.add(tabs["profile"], text="Profile")
+    notebook.add(tabs["loadout"], text="Loadout")
     notebook.add(tabs["options"], text="Options")
     notebook.add(tabs["achievements"], text="Achievements")
     notebook.add(tabs["history"], text="History")
@@ -3200,20 +3294,41 @@ def main():
             open_achievements_window(tabs["achievements"], loaded_profile["data"])
         elif selected == str(tabs["profile"]):
             session_state["current_tab"] = "profile"
+            refresh_profile_view(resync=True)
+        elif selected == str(tabs["loadout"]):
+            session_state["current_tab"] = "loadout"
+            open_game_setup_window(
+                tabs["loadout"],
+                loaded_profile["data"],
+                loaded_profile["path"],
+                session_state,
+                session_status_var,
+                session_timer_var,
+                session_map_var,
+                session_kd_var,
+                session_xp_var,
+                timer_state,
+            )
         elif selected == str(tabs["home"]):
             session_state["current_tab"] = "home"
+            update_ribbon_display()
         elif selected == str(tabs["history"]):
             session_state["current_tab"] = "history"
+            open_match_history(tabs["history"], loaded_profile["data"])
         elif selected == str(tabs["summaries"]):
             session_state["current_tab"] = "summaries"
         elif selected == str(tabs["match"]):
             session_state["current_tab"] = "match"
+            if session_state.get("phase") == "playing":
+                start_doomguy_animation(root, session_state)
+            elif session_state.get("phase") == "waiting":
+                start_lobby_view(root, session_state, session_state.get("lobby_duration", 12))
 
     notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
 
     title_label = tk.Label(
         tabs["home"],
-        text="Idle FPS version 0.0.8.1 by ErsatzRealizm",
+        text="Idle FPS version 0.0.8.7 by ErsatzRealizm",
         font=("Segoe UI", 16, "bold"),
         bg=THEME["bg"],
         fg=THEME["text"],
@@ -3284,6 +3399,7 @@ def main():
         "nuke_until": 0.0,
         "nuke_prompt": None,
         "pending_nuke": False,
+        "nuke_ends_match": False,
         "match_start": 0.0,
         "timeline": {},
         "totals": {},
@@ -3293,6 +3409,7 @@ def main():
     session_state["match_view_opened_callback"] = lambda: None
     session_state["ribbon_refresh_callback"] = lambda: None
     session_state["profile_refresh_callback"] = lambda: None
+    session_state["show_tab"] = show_tab
     session_state["current_tab"] = "home"
     session_state["summary_container"] = tabs["summaries"]
     session_state["summary_notebook"] = None
@@ -3371,6 +3488,7 @@ def main():
 
     def show_profile_view():
         refresh_profile_view(resync=True)
+    session_state["profile_view_callback"] = show_profile_view
 
     def refresh_profile_list():
         profile_list.delete(0, "end")
@@ -3379,6 +3497,16 @@ def main():
 
     def load_profile_from_path(path, show_loadout=True):
         session_status_var.set("Loading profile...")
+        if session_state.get("running"):
+            stop_game_session(
+                root,
+                session_state,
+                session_status_var,
+                session_timer_var,
+                session_map_var,
+                session_kd_var,
+                session_xp_var,
+            )
         try:
             data = json.loads(Path(path).read_text(encoding="ascii"))
             gamertag = data["player"]["gamertag"]
@@ -3425,10 +3553,9 @@ def main():
         )
         if show_loadout:
             profile_view_state["active"] = False
-            show_tab("profile")
-            profile_view_state["active"] = False
+            show_tab("loadout")
             open_game_setup_window(
-                profile_content,
+                tabs["loadout"],
                 loaded_profile["data"],
                 loaded_profile["path"],
                 session_state,
@@ -3535,9 +3662,9 @@ def main():
 
     def on_start_click():
         if loaded_profile["data"] and loaded_profile["path"]:
-            show_tab("profile")
+            show_tab("loadout")
             open_game_setup_window(
-                profile_content,
+                tabs["loadout"],
                 loaded_profile["data"],
                 loaded_profile["path"],
                 session_state,
