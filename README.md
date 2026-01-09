@@ -8,9 +8,7 @@ How to play
 5. select quickstart
 6. now you are playing
 
-you can now view the player profile and inspect results in summaries
-
-you will now be earning xp, leveling up weapons, earning camos, and achievements while the game runs.  
+Idle FPS Change List (session summary)
 
 UI / Tabs
 - Added a dedicated Loadout tab; Start/Play now routes to Loadout, and loading a profile can open the Loadout tab.
@@ -18,6 +16,7 @@ UI / Tabs
 - Profile view refresh callback saved; Save Loadout returns to Profile tab and refreshes view.
 - All tabs auto-refresh when selected (Profile, Loadout, Options, Achievements, History, Match).
 - Match tab reopens the match/lobby view when a session is active.
+- Added a Leaderboard tab with top 100 gamertags and player rank section.
 
 History
 - Match History now shows the last 50 matches in a scrollable list.
@@ -35,6 +34,17 @@ Ribbons
 - Ribbons now use per-achievement unique palettes (deterministic) with 5 vertical color sections.
 - Ribbon text color changed to black.
 - Ribbon palette tuned to more earthy, subdued tones.
+
+Leaderboard
+- Generated 100 deterministic gamertags (English/Spanish/Japanese/Russian + humorous variants, mixed case, symbols).
+- #1 score set to 16,420,069 with tight 1.0?1.2% decay for top 10 and 1?2% for ranks 11?100.
+- Leaderboard rows show rank label (Prestige/Master of War), time played, and XP.
+- Player footer shows rank, XP, kills, and prestige/master label plus time.
+- Leaderboard time now follows XP pacing rules (8 hours per prestige cycle, 4 hours per master level).
+- Master of War 1000 animated name styling applied to any top?100 entry at that level.
+
+Progression
+- XP table tuned: LEVEL_XP_BASE=50, LEVEL_XP_STEP=25, MASTER_LEVEL_XP=20000.
 
 Versioning
 - Title updated to Idle FPS version 0.0.8.7.
