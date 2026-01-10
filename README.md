@@ -29,6 +29,7 @@ Debug / Options
 Match / Profile Behavior
 - Stopped any running match session when a new profile is loaded to prevent mixed profile status updates.
 - Nukes now end matches in live play only; offline progression is unaffected.
+- Offline progression can now exceed 25 kill streaks (cap removed for offline only).
 
 Ribbons
 - Ribbons now use per-achievement unique palettes (deterministic) with 5 vertical color sections.
@@ -42,9 +43,19 @@ Leaderboard
 - Player footer shows rank, XP, kills, and prestige/master label plus time.
 - Leaderboard time now follows XP pacing rules (8 hours per prestige cycle, 4 hours per master level).
 - Master of War 1000 animated name styling applied to any top?100 entry at that level.
+- Leaderboard simulates offline progression for top 100 with a "reticulating splines" loading screen.
+- Top?100 simulation runs at half XP rate; player earns full rate only when currently in top 100.
+- Leaderboard refreshes after match end when active.
+- Rank progression is weighted to climb quickly from 440,000 to 200,000.
 
 Progression
 - XP table tuned: LEVEL_XP_BASE=50, LEVEL_XP_STEP=25, MASTER_LEVEL_XP=20000.
+
+Match View
+- Enemy visuals changed to red stick figures.
+- Player character replaced by a single tall, narrow gun silhouette.
+- Kill feed moved to the bottom-left.
+- Minimap experiment added then removed.
 
 Versioning
 - Title updated to Idle FPS version 0.0.8.7.
