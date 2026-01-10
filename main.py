@@ -836,9 +836,9 @@ def apply_offline_progress(profile, offline_seconds):
             if kills_per_match >= 6:
                 team_kills += int(kills_per_match // 6)
             if deaths_per_match <= 1:
-                streak = min(25, int(kills_per_match))
+                streak = int(kills_per_match)
             else:
-                streak = min(25, int(kills_per_match * 0.6))
+                streak = int(kills_per_match * 0.6)
             longest_offline_streak = max(longest_offline_streak, streak)
         if longest_offline_streak:
             stats["longest_kill_streak"] = max(
@@ -1199,10 +1199,12 @@ def start_doomguy_animation(root, session_state):
         for idx, name in enumerate(enemies):
             ex, ey = positions[idx % len(positions)]
             hitboxes.append((ex, ey, 10))
-            # Enemy with shadow and highlight for depth.
-            canvas.create_oval(ex - 8, ey + 6, ex + 8, ey + 10, fill="#1a1212", outline="")
-            canvas.create_oval(ex - 10, ey - 10, ex + 10, ey + 10, fill="#8b2d2d", outline="")
-            canvas.create_oval(ex - 6, ey - 8, ex + 2, ey, fill="#a94343", outline="")
+            # Enemy stick figure.
+            canvas.create_oval(ex - 6, ey - 16, ex + 6, ey - 4, fill="#8b2d2d", outline="")
+            canvas.create_line(ex, ey - 4, ex, ey + 10, fill="#8b2d2d", width=2)
+            canvas.create_line(ex - 8, ey + 2, ex + 8, ey + 2, fill="#a94343", width=2)
+            canvas.create_line(ex, ey + 10, ex - 6, ey + 20, fill="#7a2020", width=2)
+            canvas.create_line(ex, ey + 10, ex + 6, ey + 20, fill="#7a2020", width=2)
             if idx in hit_indices:
                 canvas.create_oval(ex - 16, ey - 16, ex + 16, ey + 16, outline="#f0d24b", width=2)
                 canvas.create_line(ex - 6, ey, ex - 2, ey, fill="#f0d24b", width=2)
@@ -1212,27 +1214,13 @@ def start_doomguy_animation(root, session_state):
             canvas.create_text(ex, ey + 16, text=name, fill="#c0c0c0", font=("Segoe UI", 7))
         session_state["enemy_hitboxes"] = hitboxes
 
-        # Doomguy stick figure with a simple walk cycle.
+        # First-person weapon view.
         respawn_until = session_state.get("respawn_until", 0)
         if time.monotonic() >= respawn_until:
             bob = 2 if frame % 10 < 5 else 0
-            x = 160 + (frame % 40 - 20) * 0.6
-            y = offset_y + 120 + bob
-            # Ground shadow.
-            canvas.create_oval(x - 12, y + 26, x + 12, y + 32, fill="#0f1118", outline="")
-            # Head with highlight.
-            canvas.create_oval(x - 8, y - 18, x + 8, y - 2, fill="#c89b6d", outline="")
-            canvas.create_oval(x - 6, y - 16, x - 1, y - 9, fill="#deb894", outline="")
-            # Torso with shading.
-            canvas.create_line(x, y - 2, x, y + 20, fill="#c95738", width=4)
-            canvas.create_line(x + 2, y - 2, x + 2, y + 20, fill="#a7462f", width=2)
-            # Legs with depth.
-            leg_offset = 6 if frame % 10 < 5 else -6
-            canvas.create_line(x, y + 20, x - 6, y + 36 + leg_offset, fill="#7b3f2a", width=3)
-            canvas.create_line(x, y + 20, x + 6, y + 36 - leg_offset, fill="#5f2e1f", width=3)
-            # Arms with slight highlight.
-            canvas.create_line(x - 10, y + 6, x + 10, y + 10, fill="#c95738", width=3)
-            canvas.create_line(x - 10, y + 7, x + 10, y + 11, fill="#b14c35", width=1)
+            x = 160 + (frame % 40 - 20) * 0.3
+            y = offset_y + 170 + bob
+            canvas.create_rectangle(x - 6, y - 40, x + 6, y + 20, fill="#2c333d", outline="")
 
         # Kill feedback.
         if time.monotonic() - last_kill_time < 1.0:
@@ -1259,7 +1247,7 @@ def start_doomguy_animation(root, session_state):
         for idx, (_, text) in enumerate(feed[-4:]):
             canvas.create_text(
                 10,
-                offset_y + 12 + idx * 12,
+                offset_y + 166 + idx * 12,
                 text=text,
                 fill="#d5e3f0",
                 font=("Segoe UI", 8),
@@ -1744,6 +1732,9 @@ def start_game_session(root, session_state, status_var, timer_var, map_var, kd_v
         profile_refresh = session_state.get("profile_refresh_callback")
         if profile_refresh:
             profile_refresh()
+        leaderboard_refresh = session_state.get("leaderboard_refresh_callback")
+        if leaderboard_refresh:
+            leaderboard_refresh()
         start_lobby_wait(
             root,
             session_state,
@@ -2584,7 +2575,8 @@ def leaderboard_rank_from_xp(xp_total):
     xp = max(0, int(xp_total))
     rank = 440_000
     segments = [
-        (rank - 80_000, 200),
+        (rank - 200_000, 1),
+        (200_000 - 80_000, 5),
         (80_000 - 10_000, 800),
         (10_000 - 100, 2000),
         (100 - 1, 5000),
@@ -2676,9 +2668,51 @@ def generate_global_leaderboard():
     return leaderboard
 
 
-def open_leaderboard_window(parent, loaded_profile):
+def simulate_leaderboard_progress(entries, delta_seconds, exempt_name=None):
+    # Advance leaderboard scores using offline progression pacing.
+    if delta_seconds <= 0:
+        return entries
+    base_cycle = sum(level_threshold(level) for level in range(1, BASE_MAX_LEVEL + 1))
+    base_rate = (base_cycle / 8.0) * 0.5
+    for entry in entries:
+        seed = hashlib.md5(entry.get("name", "").encode("utf-8")).digest()[0]
+        factor = 0.85 + (seed / 255.0) * 0.3
+        rate = base_rate
+        if exempt_name and entry.get("name") == exempt_name:
+            rate = base_cycle / 8.0
+        gain = int(rate * factor * (delta_seconds / 3600.0))
+        entry["score"] = int(entry.get("score", 0)) + max(0, gain)
+    entries.sort(key=lambda item: item.get("score", 0), reverse=True)
+    return entries
+
+
+def open_leaderboard_window(parent, loaded_profile, session_state=None, simulate=True):
     # Display the global leaderboard and the player's rank.
     clear_frame(parent)
+    if simulate and session_state is not None:
+        loading = tk.Frame(parent, bg=THEME["bg"])
+        loading.pack(fill="both", expand=True)
+        label = tk.Label(
+            loading,
+            text="Reticulating splines...",
+            font=("Segoe UI", 12, "bold"),
+            bg=THEME["bg"],
+            fg=THEME["accent"],
+        )
+        label.pack(pady=(30, 6))
+        sub = tk.Label(
+            loading,
+            text="Simulating offline progression for top 100 players.",
+            font=("Segoe UI", 9),
+            bg=THEME["bg"],
+            fg=THEME["muted"],
+        )
+        sub.pack()
+        parent.after(
+            800,
+            lambda: open_leaderboard_window(parent, loaded_profile, session_state, simulate=False),
+        )
+        return
     window = parent
     window.configure(bg=THEME["bg"])
 
@@ -2714,7 +2748,6 @@ def open_leaderboard_window(parent, loaded_profile):
 
     canvas.bind("<Configure>", on_canvas_configure)
 
-    leaderboard = generate_global_leaderboard()
     player_name = None
     player_score = None
     player_rank = None
@@ -2729,6 +2762,22 @@ def open_leaderboard_window(parent, loaded_profile):
         player_kills = int(stats.get("kills", 0))
         player_rank_label = leaderboard_rank_label_from_xp(player_score)
         player_time_seconds = xp_to_offline_time_seconds(player_score)
+    if session_state is not None:
+        cached = session_state.get("leaderboard_entries")
+        if cached is None:
+            leaderboard = generate_global_leaderboard()
+        else:
+            leaderboard = cached
+        now = time.time()
+        last_update = session_state.get("leaderboard_last_update", now)
+        exempt_name = None
+        if player_name and any(entry.get("name") == player_name for entry in leaderboard):
+            exempt_name = player_name
+        simulate_leaderboard_progress(leaderboard, now - last_update, exempt_name)
+        session_state["leaderboard_last_update"] = now
+        session_state["leaderboard_entries"] = leaderboard
+    else:
+        leaderboard = generate_global_leaderboard()
     display_entries = list(leaderboard)
     if player_rank is not None and 1 <= player_rank <= len(display_entries):
         display_entries[player_rank - 1] = {
@@ -2833,6 +2882,13 @@ def open_leaderboard_window(parent, loaded_profile):
             fg=THEME["text"],
         )
         status.pack(anchor="w", padx=12, pady=(0, 8))
+
+    if session_state is not None:
+        session_state["leaderboard_refresh_callback"] = (
+            lambda: open_leaderboard_window(parent, loaded_profile, session_state, simulate=False)
+            if session_state.get("current_tab") == "leaderboard"
+            else None
+        )
 
 
 def open_achievements_window(parent, loaded_profile):
@@ -3576,7 +3632,7 @@ def main():
             on_options(tabs["options"], loaded_profile["data"], loaded_profile["path"], session_state)
         elif selected == str(tabs["leaderboard"]):
             session_state["current_tab"] = "leaderboard"
-            open_leaderboard_window(tabs["leaderboard"], loaded_profile["data"])
+            open_leaderboard_window(tabs["leaderboard"], loaded_profile["data"], session_state)
         elif selected == str(tabs["achievements"]):
             session_state["current_tab"] = "achievements"
             open_achievements_window(tabs["achievements"], loaded_profile["data"])
@@ -3613,6 +3669,7 @@ def main():
                 start_lobby_view(root, session_state, session_state.get("lobby_duration", 12))
 
     notebook.bind("<<NotebookTabChanged>>", on_tab_changed)
+    show_tab("home")
 
     title_label = tk.Label(
         tabs["home"],
@@ -3697,6 +3754,7 @@ def main():
     session_state["match_view_opened_callback"] = lambda: None
     session_state["ribbon_refresh_callback"] = lambda: None
     session_state["profile_refresh_callback"] = lambda: None
+    session_state["leaderboard_refresh_callback"] = lambda: None
     session_state["show_tab"] = show_tab
     session_state["current_tab"] = "home"
     session_state["summary_container"] = tabs["summaries"]
